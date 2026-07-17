@@ -4,7 +4,6 @@
 
 
 import os
-import sys
 import shutil
 import asyncio
 
@@ -46,7 +45,7 @@ async def _logger(_, m: types.Message):
 async def restart_bot():
     asyncio.create_task(stop())
     await asyncio.sleep(2)
-    os.execl(sys.executable, sys.executable, "-m", "ishu")
+    os._exit(1)
 
 
 @app.on_message(filters.command(["restart"]) & app.sudoers)
