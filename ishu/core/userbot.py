@@ -3,12 +3,61 @@
 # This file is part of AnonXMusic
 
 
-from pyrogram import Client
+from time import time
 
+from pyrogram import Client
+from pyrogram import filters, types, enums
 
 from pyrogram import errors
 
 from ishu import config, logger
+
+
+_PM_COOLDOWN_SECONDS = 120
+_pm_last_reply = {}
+
+
+def _register_pm_autoreply(client, ub_num: int) -> None:
+    @client.on_message(filters.private & ~filters.me & ~filters.bot & ~filters.service, group=100)
+    async def _assistant_pm_reply(_, message):
+        if not message.from_user:
+            return
+        user_id = message.from_user.id
+        now = time()
+        last = _pm_last_reply.get((ub_num, user_id), 0)
+        if now - last < _PM_COOLDOWN_SECONDS:
+            return
+        _pm_last_reply[(ub_num, user_id)] = now
+        try:
+            try:
+                from ishu import app as _app
+            except ImportError:
+                from Infinix import app as _app
+            bot_link = f"https://t.me/{_app.username}" if getattr(_app, "username", None) else f"tg://user?id={getattr(_app, 'id', 0)}"
+            channel_link = getattr(config, "SUPPORT_CHANNEL", None) or "https://t.me/"
+            support_link = getattr(config, "SUPPORT_CHAT", None)
+            _name = getattr(_app, "name", "Music Bot")
+            mention = message.from_user.mention
+            text = (
+                f"👋 Hello, {mention}!\n\n"
+                f"🔰 Welcome to {_name} Assistant 🔰\n\n"
+                f"I'm an assistant account that helps stream HD music in voice chats.\n"
+                f"To play music, use our official music bot below — just send /start and add it to your group!\n\n"
+                f"🎵 MUSIC BOT: {bot_link}\n"
+                f"📢 UPDATES CHANNEL: {channel_link}\n"
+            )
+            if support_link:
+                text += f"💬 SUPPORT GROUP: {support_link}\n"
+            text += (
+                f"\n👉 Tap the Music Bot link above, press START, then add it to your group's voice chat to enjoy unlimited songs!\n\n"
+                f"🎧 Powered by HD Music Streaming Engine ✨"
+            )
+            try:
+                await message.reply_text(text, disable_web_page_preview=True)
+            except Exception as send_err:
+                logger.warning(f"[Assistant{ub_num}] PM autoreply send fail uid={user_id}: {send_err}")
+        except Exception as outer:
+            logger.warning(f"[Assistant{ub_num}] PM autoreply handler error uid={user_id}: {outer}")
 
 
 class Userbot(Client):
@@ -34,6 +83,7 @@ class Userbot(Client):
                     session_string=session,
                 ),
             )
+            client = getattr(self, key); _register_pm_autoreply(client, int(key[-1]))
 
     async def boot_client(self, num: int, ub: Client):
         """
