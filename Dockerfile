@@ -36,6 +36,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 # Copy dependency spec and install Python deps first (layer caching)
 COPY pyproject.toml ./
 RUN uv sync --no-dev
+ENV PATH="/app/.venv/bin:${PATH}"
 
 # Copy the rest of the project
 COPY . .
