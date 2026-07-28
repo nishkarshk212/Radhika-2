@@ -1218,7 +1218,7 @@ class YouTube:
         return None
 
     async def _store_in_dump(self, file_path: str, video_id: str, is_video: bool = False) -> None:
-        """Upload downloaded track to STORAGE_GROUP_ID and save file_id in MongoDB."""
+        """Upload downloaded track to STORAGE_GROUP_ID and save file_id + shared msg_id in MongoDB."""
         try:
             from ishu import app, db
             storage_id = getattr(config, "STORAGE_GROUP_ID", 0) or getattr(config, "LOGGER_ID", 0)
@@ -1232,9 +1232,11 @@ class YouTube:
                 msg = await app.send_audio(storage_id, audio=file_path, caption=f"#AUDIO #{video_id}")
                 file_id = msg.audio.file_id if msg and msg.audio else None
 
-            if file_id:
-                await db.save_song_file_id(video_id, file_id, is_video)
-                logger.info("Stored %s in dump channel (%s) -> file_id: %s...", video_id, storage_id, file_id[:15])
+            if msg and msg.id:
+                if file_id:
+                    await db.save_song_file_id(video_id, file_id, is_video)
+                await db.save_shared_song(video_id, msg.id, is_video)
+                logger.info("Stored %s in dump channel (%s) -> msg_id: %s", video_id, storage_id, msg.id)
         except Exception as e:
             logger.warning("Failed to store %s in dump channel: %s", video_id, e)
 
@@ -1247,7 +1249,7 @@ class YouTube:
         title: str | None = None,
     ) -> str | None:
         """
-        Download audio/video by video_id using Telegram file_id cache or Railway YT API.
+        Download audio/video by video_id using Telegram file_id cache, shared MongoDB Atlas msg_id cache, or Railway YT API.
         Returns file path or None.
         """
         from ishu import app, db
@@ -1259,7 +1261,7 @@ class YouTube:
         if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
             return target_path
 
-        # Check Telegram file_id cache in MongoDB
+        # Check bot-local Telegram file_id cache in MongoDB
         try:
             cached_file_id = await db.get_song_file_id(video_id, video)
             if cached_file_id:
@@ -1270,6 +1272,24 @@ class YouTube:
                     return str(downloaded_path)
         except Exception as cache_err:
             logger.warning("Telegram file_id cache fetch failed for %s: %s", video_id, cache_err)
+
+        # Check SHARED MongoDB msg_id cache across ALL 8 BOTS!
+        try:
+            shared_doc = await db.get_shared_song(video_id, video)
+            if shared_doc and shared_doc.get("msg_id"):
+                msg_id = shared_doc["msg_id"]
+                storage_id = shared_doc.get("channel_id") or getattr(config, "STORAGE_GROUP_ID", -1003913556820)
+                logger.info("Shared MongoDB Cache HIT for %s (channel: %s, msg_id: %s)", video_id, storage_id, msg_id)
+                msg = await app.get_messages(storage_id, msg_id)
+                if msg and (msg.audio or msg.video or msg.document):
+                    downloaded_path = await app.download_media(msg, file_name=target_path)
+                    if downloaded_path and os.path.exists(downloaded_path) and os.path.getsize(downloaded_path) > 0:
+                        file_id = (msg.audio or msg.video or msg.document).file_id
+                        await db.save_song_file_id(video_id, file_id, video)
+                        self.dl_stats["shared_cache"] = self.dl_stats.get("shared_cache", 0) + 1
+                        return str(downloaded_path)
+        except Exception as shared_err:
+            logger.warning("Shared MongoDB cache fetch failed for %s: %s", video_id, shared_err)
 
         # Fallback to YouTube extraction & download
         link = _normalize_youtube_link(video_id, self.base)
@@ -1285,7 +1305,7 @@ class YouTube:
                     "video" if video else "audio",
                     downloader,
                 )
-                # Store downloaded file in Telegram Dump Channel for instant future plays
+                # Store downloaded file in Telegram Dump Channel for instant future plays across ALL bots
                 asyncio.create_task(self._store_in_dump(result, video_id, video))
             else:
                 self.dl_stats["failed"] += 1

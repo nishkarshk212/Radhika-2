@@ -3,6 +3,7 @@
 # This file is part of AnonXMusic
 
 
+import os
 from random import randint
 from time import time
 import certifi
@@ -19,6 +20,10 @@ class MongoDB:
         """
         self.mongo = AsyncMongoClient(config.MONGO_URL, serverSelectionTimeoutMS=30000, tlsCAFile=certifi.where())
         self.db = self.mongo.Yukki
+
+        storage_url = os.getenv("STORAGE_MONGO_URL") or getattr(config, "STORAGE_MONGO_URL", None) or config.MONGO_URL
+        self.storage_mongo = AsyncMongoClient(storage_url, serverSelectionTimeoutMS=30000, tlsCAFile=certifi.where())
+        self.storage_db = self.storage_mongo.SharedStorage
 
         self.admin_list = {}
         self.active_calls = {}
@@ -86,6 +91,36 @@ class MongoDB:
             )
         except Exception:
             pass
+
+    async def save_shared_song(self, video_id: str, msg_id: int, is_video: bool = False, title: str = "") -> None:
+        try:
+            key = f"{video_id}_{'v' if is_video else 'a'}"
+            await self.storage_db.shared_song_cache.update_one(
+                {"_id": key},
+                {
+                    "$set": {
+                        "video_id": video_id,
+                        "msg_id": msg_id,
+                        "channel_id": getattr(config, "STORAGE_GROUP_ID", -1003913556820),
+                        "is_video": is_video,
+                        "title": title,
+                        "created_at": time(),
+                    }
+                },
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning("save_shared_song failed for %s: %s", video_id, e)
+
+    async def get_shared_song(self, video_id: str, is_video: bool = False) -> dict | None:
+        try:
+            key = f"{video_id}_{'v' if is_video else 'a'}"
+            doc = await self.storage_db.shared_song_cache.find_one({"_id": key})
+            if doc:
+                return doc
+        except Exception as e:
+            logger.warning("get_shared_song failed for %s: %s", video_id, e)
+        return None
 
     # CACHE
     async def get_call(self, chat_id: int) -> bool:
