@@ -48,6 +48,44 @@ DOWNLOAD_DIR        = "downloads"
 # files cause "Unable to rename file: [Errno 2]" crashes.
 _dl_locks: "dict[str, asyncio.Lock]" = {}
 
+# Download context used to enrich the error-log message sent to the log group.
+_DL_CTX: "dict" = {}
+
+
+def set_dl_context(
+    chat_id: "int | None" = None,
+    chat_title: "str | None" = None,
+    title: "str | None" = None,
+    video: bool = False,
+) -> None:
+    """Store group/song context for the next download failure report."""
+    global _DL_CTX
+    _DL_CTX = {
+        "chat_id": chat_id,
+        "chat_title": chat_title,
+        "title": title,
+        "video": video,
+    }
+
+
+async def _notify_download_failure(video_id: str, media_type: str) -> None:
+    """Best-effort: forward a total download failure to the configured log group."""
+    from ishu.helpers import utils
+    if not getattr(config, "LOGGER_ID", 0):
+        return
+    try:
+        ctx = dict(_DL_CTX)
+        await utils.error_log(
+            context=f"Download ({'video' if media_type == 'video' else 'audio'})",
+            error=f"All download methods failed for video_id: {video_id}",
+            chat_id=ctx.get("chat_id"),
+            chat_title=ctx.get("chat_title"),
+            title=ctx.get("title") or video_id,
+            video=ctx.get("video", media_type == "video"),
+        )
+    except Exception as e:
+        logger.warning("Failed to forward download failure to log group: %s", e)
+
 
 def _dl_lock(video_id: str) -> asyncio.Lock:
     lock = _dl_locks.get(video_id)
@@ -562,6 +600,7 @@ async def _download_with_fallback(
         return result, "railway"
 
     logger.error("All download methods failed for: %s", video_id)
+    await _notify_download_failure(video_id, media_type)
     return None, "none"
 
 
