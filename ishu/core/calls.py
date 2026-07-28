@@ -67,6 +67,52 @@ def _bg_download(media) -> None:
         asyncio.create_task(_task())
 
 
+# Per-chat recently-played ids and title hashes — stops autoplay from looping the same
+# songs or re-uploads.
+_recent_ids: "dict[int, list[str]]" = {}
+_recent_titles: "dict[int, list[str]]" = {}
+
+def _normalize_title(title: str | None) -> str:
+    if not title:
+        return ""
+    cleaned = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title)
+    cleaned = cleaned.split('|')[0].split('-')[0].strip().lower()
+    return cleaned
+
+def _remember(chat_id: int, vid: str | None, title: str | None = None) -> None:
+    if vid:
+        hist = _recent_ids.setdefault(chat_id, [])
+        if vid not in hist:
+            hist.append(vid)
+        if len(hist) > 200:
+            del hist[: len(hist) - 200]
+
+    if title:
+        norm_title = _normalize_title(title)
+        if norm_title:
+            thist = _recent_titles.setdefault(chat_id, [])
+            if norm_title not in thist:
+                thist.append(norm_title)
+            if len(thist) > 200:
+                del thist[: len(thist) - 200]
+
+def _is_recent(chat_id: int, vid: str | None, title: str | None = None) -> bool:
+    if vid and vid in _recent_ids.get(chat_id, []):
+        return True
+    if title:
+        norm_title = _normalize_title(title)
+        if norm_title and norm_title in _recent_titles.get(chat_id, []):
+            return True
+    return False
+
+def _clear_old_history(chat_id: int) -> None:
+    """Trim oldest 75% history when candidates are exhausted."""
+    if chat_id in _recent_ids and len(_recent_ids[chat_id]) > 5:
+        del _recent_ids[chat_id][: int(len(_recent_ids[chat_id]) * 0.75)]
+    if chat_id in _recent_titles and len(_recent_titles[chat_id]) > 5:
+        del _recent_titles[chat_id][: int(len(_recent_titles[chat_id]) * 0.75)]
+
+
 class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
@@ -258,54 +304,136 @@ class TgCall(PyTgCalls):
 
 
     async def _autoplay_next(self, chat_id: int, last) -> None:
-        """Fetch a RELATED track (not the same song) and stream it live.
-
-        Uses the just-finished track's id to pull YouTube's own up-next
-        recommendations, then plays it directly. The related track is added to
-        the queue as the current item so the autoplay chain continues (the
-        previous implementation never re-queued it, so autoplay died after one
-        track). Falls back to a title search only if related lookup fails.
         """
-        _lang = await lang.get_lang(chat_id)
-        msg = await app.send_message(chat_id=chat_id, text=_lang["play_searching"])
-
-        track = None
-        last_id = getattr(last, "id", None)
-        last_title = getattr(last, "title", None) or ""
-        if last_id:
-            track = await yt.get_related(last_id, msg.id)
-            # get_related may occasionally surface the finished video itself
-            # (e.g. as the first "up next" entry) — skip an identical id so we
-            # never replay the same track under autoplay.
-            if track and track.id == last_id:
-                track = None
-        if not track and last_title:
-            query = last_title.split("|")[0].split("(")[0].strip()
-            # search() already appends "official audio" and filters
-            # remixes/covers, so do NOT double-append it here — passing the
-            # raw title is what keeps the fallback from re-returning the same
-            # song as `last`.
-            track = await yt.search(query, msg.id, video=False)
-        if not track:
-            return await self.stop(chat_id)
-
-        track.user = "Autoplay"
-        track._chat_id = chat_id
-        # Live stream via cookies — force cookies so the googlevideo URL is
-        # fetched with the signed-in account. Fall back to a one-off download
-        # if the stream fails (e.g. region 403) so autoplay keeps the queue alive.
-        track.stream_url = await yt.get_stream_url(track.id, force_cookies=True)
-        if not track.stream_url:
-            track.file_path = await yt.download(track.id)
-        if not track.stream_url and not track.file_path:
-            await msg.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+        Smart Autoplay System: Automatically finds, verifies, and streams a non-repeating related song.
+        """
+        # User Priority Check: If user queued a song in the meantime, abort autoplay and play user song!
+        if queue.get_queue(chat_id):
             return await self.play_next(chat_id)
 
-        # Re-queue the related track as the current item so the next
-        # StreamEnded continues the autoplay chain instead of stopping.
-        queue.force_add(chat_id, track)
-        track.message_id = msg.id
-        await self.play_media(chat_id, msg, track)
+        _lang = await lang.get_lang(chat_id)
+        msg = await app.send_message(chat_id=chat_id, text=_lang["play_searching"], parse_mode=enums.ParseMode.HTML)
+
+        last_id = getattr(last, "id", None)
+        last_title = getattr(last, "title", None) or ""
+        last_channel = getattr(last, "channel_name", None) or ""
+        clean_title = _normalize_title(last_title)
+
+        # Build Candidate Pool
+        candidates: list = []
+
+        # Tier 1: YouTube Watch Next / Related Recommendations
+        if last_id:
+            try:
+                related = await yt.get_related_candidates(last_id, limit=15)
+                if related:
+                    candidates.extend(related)
+            except Exception as e:
+                logger.warning("Autoplay Tier 1 failed for %s: %s", last_id, e)
+
+        # Tier 2: Search by Artist + Song Title / Related
+        if len(candidates) < 5:
+            queries = []
+            if last_channel and clean_title:
+                queries.append(f"{last_channel} {clean_title}")
+            if clean_title:
+                queries.append(f"songs like {clean_title}")
+                queries.append(f"{clean_title} full song")
+
+            for q in queries:
+                try:
+                    similar = await yt.search_similar_candidates(q, limit=5)
+                    if similar:
+                        candidates.extend(similar)
+                except Exception as e:
+                    logger.warning("Autoplay Tier 2 failed for query '%s': %s", q, e)
+
+        # Tier 3: General Expansion / Artist Radio
+        if not candidates:
+            try:
+                fallback_q = f"{last_channel} top songs" if last_channel else "top trending songs"
+                candidates = await yt.search_similar_candidates(fallback_q, limit=10)
+            except Exception as e:
+                logger.warning("Autoplay Tier 3 fallback failed: %s", e)
+
+        # Candidate Validation & Filtering
+        duration_limit = getattr(config, "DURATION_LIMIT", 7200)
+        curr_queue_ids = [getattr(t, "id", None) for t in queue.get_queue(chat_id) if hasattr(t, "id")]
+
+        def _filter(cand_list: list) -> list:
+            valid = []
+            seen_in_batch = set()
+            for t in cand_list:
+                if not t or not getattr(t, "id", None):
+                    continue
+                tid = t.id
+                if tid == last_id or tid in seen_in_batch:
+                    continue
+                if tid in curr_queue_ids:
+                    continue
+                if _is_recent(chat_id, tid, getattr(t, "title", "")):
+                    continue
+                # Duration filter: must be between 20 sec and DURATION_LIMIT
+                dur = getattr(t, "duration_sec", 0) or 0
+                if dur > 0 and (dur < 20 or dur > duration_limit):
+                    continue
+                seen_in_batch.add(tid)
+                valid.append(t)
+            return valid
+
+        valid_candidates = _filter(candidates)
+
+        # Exhaustion fallback: If all candidates filtered out (history full), trim history and re-filter
+        if not valid_candidates and candidates:
+            _clear_old_history(chat_id)
+            valid_candidates = _filter(candidates)
+
+        if not valid_candidates:
+            logger.info("Autoplay found no unique candidates for chat %s", chat_id)
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return await self.stop(chat_id)
+
+        # Stream / File Availability Verification Loop
+        selected_track = None
+        for candidate in valid_candidates:
+            # Check user queue priority right before streaming
+            if queue.get_queue(chat_id):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return await self.play_next(chat_id)
+
+            try:
+                candidate.stream_url = await yt.get_stream_url(candidate.id)
+                if not candidate.stream_url:
+                    candidate.file_path = await yt.download(candidate.id)
+
+                if candidate.stream_url or candidate.file_path:
+                    selected_track = candidate
+                    break
+            except Exception as err:
+                logger.warning("Autoplay candidate %s stream/download failed: %s", candidate.id, err)
+                continue
+
+        if not selected_track:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return await self.stop(chat_id)
+
+        # Final setup and play
+        selected_track.user = "Autoplay"
+        selected_track._chat_id = chat_id
+        _remember(chat_id, selected_track.id, selected_track.title)
+
+        queue.force_add(chat_id, selected_track)
+        selected_track.message_id = msg.id
+        await self.play_media(chat_id, msg, selected_track)
 
 
     async def play_next(self, chat_id: int) -> None:

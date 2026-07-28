@@ -998,6 +998,115 @@ class YouTube:
             time=int(_time.time()),
         )
 
+    async def get_related_candidates(self, video_id: str, limit: int = 15) -> list[Track]:
+        """Return a list of RELATED Tracks for autoplay candidate pool."""
+        link = self.base + video_id
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            try:
+                opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                }
+                cookie = cookie_txt_file()
+                if cookie:
+                    opts["cookiefile"] = cookie
+                with yt_dlp.YoutubeDL(_with_js_runtime(opts)) as ydl:
+                    info = ydl.extract_info(link, download=False) or {}
+                rel = info.get("related_videos") or []
+                candidates = []
+                for r in rel:
+                    rid = r.get("id")
+                    if not rid or rid == video_id:
+                        continue
+                    if "list=" in (r.get("url") or ""):
+                        continue
+                    if r.get("duration") is None and not r.get("title"):
+                        continue
+                    candidates.append(r)
+                    if len(candidates) >= limit:
+                        break
+                return candidates
+            except Exception as e:
+                logger.warning("get_related_candidates failed for %s: %s", video_id, e)
+                return []
+
+        try:
+            raw_list = await asyncio.wait_for(loop.run_in_executor(None, _run), timeout=20)
+        except asyncio.TimeoutError:
+            logger.warning("get_related_candidates timed out for %s", video_id)
+            raw_list = []
+
+        tracks = []
+        for r in raw_list:
+            rid = r.get("id")
+            if not rid:
+                continue
+            dur_val = r.get("duration")
+            if isinstance(dur_val, (int, float)):
+                m, s = divmod(int(dur_val), 60)
+                h, m = divmod(m, 60)
+                duration_min = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+                duration_sec = int(dur_val)
+            else:
+                duration_min = str(dur_val or "00:00")
+                try:
+                    duration_sec = int(utils.to_seconds(duration_min)) if duration_min else 0
+                except Exception:
+                    duration_sec = 0
+
+            tracks.append(
+                Track(
+                    id=rid,
+                    title=r.get("title", "Unknown Track"),
+                    url=r.get("url", self.base + rid),
+                    duration=duration_min,
+                    duration_sec=duration_sec,
+                    thumbnail=(r.get("thumbnails") or [{}])[0].get("url", "").split("?")[0],
+                    channel_name=r.get("channel") or r.get("uploader") or "",
+                    message_id=0,
+                    video=False,
+                    time=int(_time.time()),
+                )
+            )
+        return tracks
+
+    async def search_similar_candidates(self, query: str, limit: int = 10) -> list[Track]:
+        """Search YouTube for similar candidate tracks for autoplay fallback."""
+        try:
+            results = VideosSearch(query, limit=limit)
+            raw_results = (await results.next()).get("result", [])
+            tracks = []
+            for r in raw_results:
+                vidid = r.get("id")
+                if not vidid:
+                    continue
+                duration_min = r.get("duration") or "00:00"
+                try:
+                    duration_sec = int(utils.to_seconds(duration_min)) if duration_min else 0
+                except Exception:
+                    duration_sec = 0
+
+                tracks.append(
+                    Track(
+                        id=vidid,
+                        title=r.get("title", "Unknown Track"),
+                        url=r.get("link", self.base + vidid),
+                        duration=duration_min,
+                        duration_sec=duration_sec,
+                        thumbnail=(r.get("thumbnails") or [{}])[0].get("url", "").split("?")[0],
+                        channel_name=(r.get("channel") or {}).get("name", ""),
+                        message_id=0,
+                        video=False,
+                        time=int(_time.time()),
+                    )
+                )
+            return tracks
+        except Exception as e:
+            logger.warning("search_similar_candidates error for '%s': %s", query, e)
+            return []
+
     async def get_stream_url(
         self,
         video_id: str,
