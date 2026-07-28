@@ -4,6 +4,7 @@
 
 
 import asyncio
+import re
 from pathlib import Path
 
 from ntgcalls import (ConnectionNotFound, TelegramServerError,
@@ -16,6 +17,7 @@ from pytgcalls.pytgcalls_session import PyTgCallsSession
 
 from ishu import (app, config, db, lang, logger,
                    queue, thumb, userbot, yt)
+from ishu.core.youtube import YouTube, set_dl_context
 from ishu.helpers import Media, Track, buttons, utils
 
 
@@ -45,24 +47,8 @@ def _bg_download(media) -> None:
                 if path:
                     media.file_path = path
                     logger.info("Background download complete: %s → %s", media.id, path)
-                else:
-                    await utils.error_log(
-                        getattr(media, "_chat_id", 0) or 0,
-                        "bg_download:empty_result",
-                        Exception(f"yt.download returned no path for {media.id}"),
-                        media,
-                    )
             except Exception as e:
                 logger.warning("Background download failed for %s: %s", media.id, e)
-                try:
-                    await utils.error_log(
-                        getattr(media, "_chat_id", 0) or 0,
-                        "bg_download:exception",
-                        e,
-                        media,
-                    )
-                except Exception:
-                    pass
 
         asyncio.create_task(_task())
 
@@ -199,7 +185,7 @@ class TgCall(PyTgCalls):
                 await client.play(
                     chat_id=chat_id,
                     stream=stream,
-                    config=types.GroupCallConfig(auto_start=False),
+                    config=types.GroupCallConfig(auto_start=True),
                 )
                 stream_success = True
 
@@ -214,11 +200,26 @@ class TgCall(PyTgCalls):
 
         # ── Step 3: Fallback — download then play ─────────────────────────────
         if not stream_success and isinstance(media, Track):
+            set_dl_context(
+                chat_id=chat_id,
+                chat_title=getattr(message.chat, "title", None),
+                title=media.title,
+                video=media.video,
+            )
             media.file_path = await yt.download(media.id, video=media.video)
             media_path = media.file_path
 
         if not media_path:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            if isinstance(media, Track):
+                await utils.error_log(
+                    context="Stream URL + Download both failed",
+                    error="No media source could be resolved (all download methods returned None).",
+                    chat_id=chat_id,
+                    chat_title=getattr(message.chat, "title", None),
+                    title=media.title,
+                    video=media.video,
+                )
             return await self.play_next(chat_id)
 
         try:
@@ -238,12 +239,13 @@ class TgCall(PyTgCalls):
                 await client.play(
                     chat_id=chat_id,
                     stream=stream,
-                    config=types.GroupCallConfig(auto_start=False),
+                    config=types.GroupCallConfig(auto_start=True),
                 )
 
             if not seek_time:
                 media.time = 1
                 await db.add_call(chat_id)
+                _remember(chat_id, getattr(media, "id", None), getattr(media, "title", None))
 
                 # Shorten title to 50 characters max
                 short_title = media.title.split("|")[0].split("(")[0].strip()
@@ -275,24 +277,19 @@ class TgCall(PyTgCalls):
 
                 media.message_id = message.id
 
-        except FileNotFoundError as err:
-            await utils.error_log(chat_id, "play_media:FileNotFoundError", err, media)
+        except FileNotFoundError:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             await self.play_next(chat_id)
-        except exceptions.NoActiveGroupCall as err:
-            await utils.error_log(chat_id, "play_media:NoActiveGroupCall", err, media)
+        except exceptions.NoActiveGroupCall:
             await self.stop(chat_id)
             await message.edit_text(_lang["error_no_call"])
-        except exceptions.NoAudioSourceFound as err:
-            await utils.error_log(chat_id, "play_media:NoAudioSourceFound", err, media)
+        except exceptions.NoAudioSourceFound:
             await message.edit_text(_lang["error_no_audio"])
             await self.play_next(chat_id)
-        except (ConnectionError, ConnectionNotFound, TelegramServerError) as err:
-            await utils.error_log(chat_id, "play_media:TelegramConnection", err, media)
+        except (ConnectionError, ConnectionNotFound, TelegramServerError):
             await self.stop(chat_id)
             await message.edit_text(_lang["error_tg_server"])
-        except RTMPStreamingUnsupported as err:
-            await utils.error_log(chat_id, "play_media:RTMPStreamingUnsupported", err, media)
+        except RTMPStreamingUnsupported:
             await self.stop(chat_id)
             await message.edit_text(_lang["error_rtmp"])
 
@@ -498,9 +495,6 @@ class TgCall(PyTgCalls):
                 media.file_path = await yt.download(media.id, video=media.video)
 
         if not media.stream_url and not media.file_path:
-            await utils.error_log(
-                chat_id, "play_next:no_source", Exception("no stream_url and no file_path"), media
-            )
             await msg.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.play_next(chat_id)
 
