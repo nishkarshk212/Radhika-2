@@ -170,10 +170,15 @@ class TgCall(PyTgCalls):
         used_stream = bool(media.stream_url) and not media.file_path
 
         if not media_path and isinstance(media, Track):
-            media_path = await yt.get_stream_url(media.id, video=media.video)
-            if media_path:
-                media.stream_url = media_path
-                used_stream = True
+            cached_file = await yt.download(media.id, video=media.video)
+            if cached_file:
+                media.file_path = cached_file
+                media_path = cached_file
+            else:
+                media_path = await yt.get_stream_url(media.id, video=media.video)
+                if media_path:
+                    media.stream_url = media_path
+                    used_stream = True
 
         # ── Step 2: Attempt playback ──────────────────────────────────────────
         stream_success = False
