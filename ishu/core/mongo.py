@@ -477,6 +477,34 @@ class MongoDB:
             )
         return count
 
+    async def get_assistant_pm_config(self) -> dict:
+        try:
+            doc = await self.storage_db.assistant_pm_config.find_one({"_id": "default"})
+            return doc or {}
+        except Exception as e:
+            logger.warning("get_assistant_pm_config failed: %s", e)
+            return {}
+
+    async def set_assistant_pm_text(self, text: str) -> None:
+        try:
+            await self.storage_db.assistant_pm_config.update_one(
+                {"_id": "default"},
+                {"$set": {"text": text, "updated_at": time()}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning("set_assistant_pm_text failed: %s", e)
+
+    async def set_assistant_pm_buttons(self, buttons: list) -> None:
+        try:
+            await self.storage_db.assistant_pm_config.update_one(
+                {"_id": "default"},
+                {"$set": {"buttons": buttons, "updated_at": time()}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning("set_assistant_pm_buttons failed: %s", e)
+
     async def load_cache(self) -> None:
         doc = await self.cache.find_one({"_id": "migrated"})
         if not doc:
