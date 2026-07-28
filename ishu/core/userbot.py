@@ -83,7 +83,7 @@ class Userbot(Client):
                     session_string=session,
                 ),
             )
-            client = getattr(self, key); _register_pm_autoreply(client, int(key[-1]))
+            client = getattr(self, key); _register_pm_autoreply(client, int(string_key[-1]))
 
     async def boot_client(self, num: int, ub: Client):
         """
