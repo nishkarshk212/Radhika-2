@@ -34,7 +34,9 @@ class MongoDB:
         self.notified = []
         self.autoplay = []
         self.cache = self.db.cache
-        self.logger = False
+        # Default: logger is ON whenever LOGGER_ID is configured. The value is
+        # overwritten by get_logger() at boot if a persisted setting exists.
+        self.logger = bool(config.LOGGER_ID)
 
         self.assistant = {}
         self.assistantdb = self.db.assistant
@@ -50,6 +52,7 @@ class MongoDB:
 
         self.users = []
         self.usersdb = self.db.users
+        self.song_cachedb = self.db.song_cache
 
     async def connect(self) -> None:
         """Check if we can connect to the database.
@@ -69,58 +72,6 @@ class MongoDB:
         """Close the connection to the database."""
         await self.mongo.close()
         logger.info("Database connection closed.")
-
-    # TELEGRAM DUMP CHANNEL FILE_ID CACHE
-    async def get_song_file_id(self, video_id: str, is_video: bool = False) -> str | None:
-        try:
-            key = f"{video_id}_{'v' if is_video else 'a'}"
-            doc = await self.db.song_cache.find_one({"_id": key})
-            if doc and "file_id" in doc:
-                return doc["file_id"]
-        except Exception:
-            pass
-        return None
-
-    async def save_song_file_id(self, video_id: str, file_id: str, is_video: bool = False) -> None:
-        try:
-            key = f"{video_id}_{'v' if is_video else 'a'}"
-            await self.db.song_cache.update_one(
-                {"_id": key},
-                {"$set": {"video_id": video_id, "file_id": file_id, "is_video": is_video, "created_at": time()}},
-                upsert=True
-            )
-        except Exception:
-            pass
-
-    async def save_shared_song(self, video_id: str, msg_id: int, is_video: bool = False, title: str = "") -> None:
-        try:
-            key = f"{video_id}_{'v' if is_video else 'a'}"
-            await self.storage_db.shared_song_cache.update_one(
-                {"_id": key},
-                {
-                    "$set": {
-                        "video_id": video_id,
-                        "msg_id": msg_id,
-                        "channel_id": getattr(config, "STORAGE_GROUP_ID", -1003913556820),
-                        "is_video": is_video,
-                        "title": title,
-                        "created_at": time(),
-                    }
-                },
-                upsert=True,
-            )
-        except Exception as e:
-            logger.warning("save_shared_song failed for %s: %s", video_id, e)
-
-    async def get_shared_song(self, video_id: str, is_video: bool = False) -> dict | None:
-        try:
-            key = f"{video_id}_{'v' if is_video else 'a'}"
-            doc = await self.storage_db.shared_song_cache.find_one({"_id": key})
-            if doc:
-                return doc
-        except Exception as e:
-            logger.warning("get_shared_song failed for %s: %s", video_id, e)
-        return None
 
     # CACHE
     async def get_call(self, chat_id: int) -> bool:
@@ -210,6 +161,54 @@ class MongoDB:
             self.assistant[chat_id] = num
 
         return {1: userbot.one, 2: userbot.two, 3: userbot.three}.get(num)
+
+    # TELEGRAM STORAGE CHANNEL FILE_ID CACHE
+    async def get_song_file_id(self, video_id: str, is_video: bool = False) -> str | None:
+        """Get Telegram file_id for a cached song from MongoDB."""
+        key = f"{video_id}_v" if is_video else f"{video_id}_a"
+        doc = await self.song_cachedb.find_one({"_id": key})
+        return doc.get("file_id") if doc else None
+
+    async def save_song_file_id(self, video_id: str, file_id: str, is_video: bool = False) -> None:
+        try:
+            key = f"{video_id}_{'v' if is_video else 'a'}"
+            await self.db.song_cache.update_one(
+                {"_id": key},
+                {"$set": {"video_id": video_id, "file_id": file_id, "is_video": is_video, "created_at": time()}},
+                upsert=True
+            )
+        except Exception:
+            pass
+
+    async def save_shared_song(self, video_id: str, msg_id: int, is_video: bool = False, title: str = "") -> None:
+        try:
+            key = f"{video_id}_{'v' if is_video else 'a'}"
+            await self.storage_db.shared_song_cache.update_one(
+                {"_id": key},
+                {
+                    "$set": {
+                        "video_id": video_id,
+                        "msg_id": msg_id,
+                        "channel_id": getattr(config, "STORAGE_GROUP_ID", -1003913556820),
+                        "is_video": is_video,
+                        "title": title,
+                        "created_at": time(),
+                    }
+                },
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning("save_shared_song failed for %s: %s", video_id, e)
+
+    async def get_shared_song(self, video_id: str, is_video: bool = False) -> dict | None:
+        try:
+            key = f"{video_id}_{'v' if is_video else 'a'}"
+            doc = await self.storage_db.shared_song_cache.find_one({"_id": key})
+            if doc:
+                return doc
+        except Exception as e:
+            logger.warning("get_shared_song failed for %s: %s", video_id, e)
+        return None
 
     # BLACKLIST METHODS
     async def add_blacklist(self, chat_id: int) -> None:
@@ -485,11 +484,14 @@ class MongoDB:
             logger.warning("get_assistant_pm_config failed: %s", e)
             return {}
 
-    async def set_assistant_pm_text(self, text: str) -> None:
+    async def set_assistant_pm_text(self, text: str, entities: list | None = None) -> None:
         try:
+            update = {"text": text, "updated_at": time()}
+            if entities is not None:
+                update["text_entities"] = entities
             await self.storage_db.assistant_pm_config.update_one(
                 {"_id": "default"},
-                {"$set": {"text": text, "updated_at": time()}},
+                {"$set": update},
                 upsert=True,
             )
         except Exception as e:
@@ -504,6 +506,56 @@ class MongoDB:
             )
         except Exception as e:
             logger.warning("set_assistant_pm_buttons failed: %s", e)
+
+    async def set_assistant_pm_media(self, media: dict | None) -> None:
+        try:
+            if media is None:
+                await self.storage_db.assistant_pm_config.update_one(
+                    {"_id": "default"},
+                    {"$unset": {"media": ""}, "$set": {"updated_at": time()}},
+                    upsert=True,
+                )
+            else:
+                await self.storage_db.assistant_pm_config.update_one(
+                    {"_id": "default"},
+                    {"$set": {"media": media, "updated_at": time()}},
+                    upsert=True,
+                )
+        except Exception as e:
+            logger.warning("set_assistant_pm_media failed: %s", e)
+
+    async def set_assistant_pm_delay(self, delay: float | None) -> None:
+        try:
+            if delay is None:
+                await self.storage_db.assistant_pm_config.update_one(
+                    {"_id": "default"},
+                    {"$unset": {"delay": ""}, "$set": {"updated_at": time()}},
+                    upsert=True,
+                )
+            else:
+                await self.storage_db.assistant_pm_config.update_one(
+                    {"_id": "default"},
+                    {"$set": {"delay": float(delay), "updated_at": time()}},
+                    upsert=True,
+                )
+        except Exception as e:
+            logger.warning("set_assistant_pm_delay failed: %s", e)
+
+    async def set_assistant_pm_disabled(self, disabled: bool) -> None:
+        try:
+            await self.storage_db.assistant_pm_config.update_one(
+                {"_id": "default"},
+                {"$set": {"disabled": bool(disabled), "updated_at": time()}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning("set_assistant_pm_disabled failed: %s", e)
+
+    async def reset_assistant_pm_config(self) -> None:
+        try:
+            await self.storage_db.assistant_pm_config.delete_one({"_id": "default"})
+        except Exception as e:
+            logger.warning("reset_assistant_pm_config failed: %s", e)
 
     async def load_cache(self) -> None:
         doc = await self.cache.find_one({"_id": "migrated"})
