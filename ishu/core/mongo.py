@@ -65,6 +65,28 @@ class MongoDB:
         await self.mongo.close()
         logger.info("Database connection closed.")
 
+    # TELEGRAM DUMP CHANNEL FILE_ID CACHE
+    async def get_song_file_id(self, video_id: str, is_video: bool = False) -> str | None:
+        try:
+            key = f"{video_id}_{'v' if is_video else 'a'}"
+            doc = await self.db.song_cache.find_one({"_id": key})
+            if doc and "file_id" in doc:
+                return doc["file_id"]
+        except Exception:
+            pass
+        return None
+
+    async def save_song_file_id(self, video_id: str, file_id: str, is_video: bool = False) -> None:
+        try:
+            key = f"{video_id}_{'v' if is_video else 'a'}"
+            await self.db.song_cache.update_one(
+                {"_id": key},
+                {"$set": {"video_id": video_id, "file_id": file_id, "is_video": is_video, "created_at": time()}},
+                upsert=True
+            )
+        except Exception:
+            pass
+
     # CACHE
     async def get_call(self, chat_id: int) -> bool:
         return chat_id in self.active_calls

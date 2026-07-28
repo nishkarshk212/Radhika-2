@@ -1108,6 +1108,28 @@ class YouTube:
 
         return None
 
+async def _store_in_dump(file_path: str, video_id: str, is_video: bool = False) -> None:
+    """Upload downloaded track to STORAGE_GROUP_ID and save file_id in MongoDB."""
+    try:
+        from ishu import app, db
+        storage_id = getattr(config, "STORAGE_GROUP_ID", 0) or getattr(config, "LOGGER_ID", 0)
+        if not storage_id:
+            return
+
+        if is_video:
+            msg = await app.send_video(storage_id, video=file_path, caption=f"#VIDEO #{video_id}")
+            file_id = msg.video.file_id if msg and msg.video else None
+        else:
+            msg = await app.send_audio(storage_id, audio=file_path, caption=f"#AUDIO #{video_id}")
+            file_id = msg.audio.file_id if msg and msg.audio else None
+
+        if file_id:
+            await db.save_song_file_id(video_id, file_id, is_video)
+            logger.info("Stored %s in dump channel (%s) -> file_id: %s...", video_id, storage_id, file_id[:15])
+    except Exception as e:
+        logger.warning("Failed to store %s in dump channel: %s", video_id, e)
+
+
     # ── Download (main method called by play.py / calls.py) ──────────────────
     async def download(
         self,
@@ -1116,17 +1138,32 @@ class YouTube:
         title: str | None = None,
     ) -> str | None:
         """
-        Download audio/video by video_id using the full fallback chain:
-          1. Cookies Base64 (yt-dlp + COOKIES_DATA)
-          2. Railway YT API
-          3. Shruti API
-          4. xBit API
-          5. yt-dlp without cookies
+        Download audio/video by video_id using Telegram file_id cache or Railway YT API.
         Returns file path or None.
         """
+        from ishu import app, db
         self.dl_stats["total_requests"] += 1
-        link = _normalize_youtube_link(video_id, self.base)
+        ext = "mp4" if video else "mp3"
+        target_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
 
+        # Check local disk cache first
+        if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+            return target_path
+
+        # Check Telegram file_id cache in MongoDB
+        try:
+            cached_file_id = await db.get_song_file_id(video_id, video)
+            if cached_file_id:
+                logger.info("Telegram Dump Cache HIT for %s (file_id: %s...)", video_id, cached_file_id[:15])
+                downloaded_path = await app.download_media(cached_file_id, file_name=target_path)
+                if downloaded_path and os.path.exists(downloaded_path) and os.path.getsize(downloaded_path) > 0:
+                    self.dl_stats["telegram_cache"] = self.dl_stats.get("telegram_cache", 0) + 1
+                    return str(downloaded_path)
+        except Exception as cache_err:
+            logger.warning("Telegram file_id cache fetch failed for %s: %s", video_id, cache_err)
+
+        # Fallback to YouTube extraction & download
+        link = _normalize_youtube_link(video_id, self.base)
         try:
             result, downloader = await _download_with_fallback(
                 link, "video" if video else "audio"
@@ -1139,6 +1176,8 @@ class YouTube:
                     "video" if video else "audio",
                     downloader,
                 )
+                # Store downloaded file in Telegram Dump Channel for instant future plays
+                asyncio.create_task(_store_in_dump(result, video_id, video))
             else:
                 self.dl_stats["failed"] += 1
             return result

@@ -30,6 +30,11 @@
             "value": "",
             "required": true
         },
+        "STORAGE_GROUP_ID": {
+            "description": "Dedicated dump channel ID to store downloaded file_ids for instant playback. Defaults to LOGGER_ID if empty.",
+            "value": "",
+            "required": false
+        },
         "OWNER_ID": {
             "description": "The user id of user whom you would like to add as OWNER.",
             "value": "",

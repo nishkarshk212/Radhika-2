@@ -12,6 +12,7 @@ class Config:
         self.MONGO_URL = getenv("MONGO_URL")
 
         self.LOGGER_ID = int(getenv("LOGGER_ID", 0))
+        self.STORAGE_GROUP_ID = int(getenv("STORAGE_GROUP_ID", getenv("LOGGER_ID", 0)))
         self.OWNER_ID = int(getenv("OWNER_ID", 0))
 
         self.DURATION_LIMIT = int(getenv("DURATION_LIMIT", 120)) * 60
