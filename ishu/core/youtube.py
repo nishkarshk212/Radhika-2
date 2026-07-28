@@ -1108,26 +1108,26 @@ class YouTube:
 
         return None
 
-async def _store_in_dump(file_path: str, video_id: str, is_video: bool = False) -> None:
-    """Upload downloaded track to STORAGE_GROUP_ID and save file_id in MongoDB."""
-    try:
-        from ishu import app, db
-        storage_id = getattr(config, "STORAGE_GROUP_ID", 0) or getattr(config, "LOGGER_ID", 0)
-        if not storage_id:
-            return
+    async def _store_in_dump(self, file_path: str, video_id: str, is_video: bool = False) -> None:
+        """Upload downloaded track to STORAGE_GROUP_ID and save file_id in MongoDB."""
+        try:
+            from ishu import app, db
+            storage_id = getattr(config, "STORAGE_GROUP_ID", 0) or getattr(config, "LOGGER_ID", 0)
+            if not storage_id:
+                return
 
-        if is_video:
-            msg = await app.send_video(storage_id, video=file_path, caption=f"#VIDEO #{video_id}")
-            file_id = msg.video.file_id if msg and msg.video else None
-        else:
-            msg = await app.send_audio(storage_id, audio=file_path, caption=f"#AUDIO #{video_id}")
-            file_id = msg.audio.file_id if msg and msg.audio else None
+            if is_video:
+                msg = await app.send_video(storage_id, video=file_path, caption=f"#VIDEO #{video_id}")
+                file_id = msg.video.file_id if msg and msg.video else None
+            else:
+                msg = await app.send_audio(storage_id, audio=file_path, caption=f"#AUDIO #{video_id}")
+                file_id = msg.audio.file_id if msg and msg.audio else None
 
-        if file_id:
-            await db.save_song_file_id(video_id, file_id, is_video)
-            logger.info("Stored %s in dump channel (%s) -> file_id: %s...", video_id, storage_id, file_id[:15])
-    except Exception as e:
-        logger.warning("Failed to store %s in dump channel: %s", video_id, e)
+            if file_id:
+                await db.save_song_file_id(video_id, file_id, is_video)
+                logger.info("Stored %s in dump channel (%s) -> file_id: %s...", video_id, storage_id, file_id[:15])
+        except Exception as e:
+            logger.warning("Failed to store %s in dump channel: %s", video_id, e)
 
 
     # ── Download (main method called by play.py / calls.py) ──────────────────
@@ -1177,7 +1177,7 @@ async def _store_in_dump(file_path: str, video_id: str, is_video: bool = False) 
                     downloader,
                 )
                 # Store downloaded file in Telegram Dump Channel for instant future plays
-                asyncio.create_task(_store_in_dump(result, video_id, video))
+                asyncio.create_task(self._store_in_dump(result, video_id, video))
             else:
                 self.dl_stats["failed"] += 1
             return result
