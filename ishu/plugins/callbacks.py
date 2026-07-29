@@ -5,10 +5,11 @@
 
 import re
 
-from pyrogram import errors, filters, types
+from pyrogram import enums, errors, filters, types
 
-from ishu import anon, app, db, lang, queue, tg, yt
+from ishu import anon, app, config, db, lang, queue, tg, userbot, yt
 from ishu.helpers import admin_check, buttons, can_manage_vc
+from ishu.plugins import all_modules
 
 
 @app.on_callback_query(filters.regex("cancel_dl") & ~app.bl_users)
@@ -127,19 +128,38 @@ async def _controls(_, query: types.CallbackQuery):
         pass
 
 
-@app.on_callback_query(filters.regex("autoplay") & ~app.bl_users)
+@app.on_callback_query(filters.regex(r"^autoplay$|^autoplay\s") & ~app.bl_users)
 @lang.language()
 @can_manage_vc
 async def _autoplay(_, query: types.CallbackQuery):
     chat_id = int(query.data.split()[1])
     enable = not await db.get_autoplay(chat_id)
     await db.set_autoplay(chat_id, enable)
+    mode = await db.get_autoplay_mode(chat_id)
     await query.answer(
         f"Autoplay {'enabled' if enable else 'disabled'}", show_alert=True
     )
     try:
         await query.edit_message_reply_markup(
-            reply_markup=buttons.controls(chat_id, autoplay=enable)
+            reply_markup=buttons.controls(chat_id, autoplay=enable, mode=mode)
+        )
+    except Exception:
+        pass
+
+
+@app.on_callback_query(filters.regex(r"^autoplay_mode") & ~app.bl_users)
+@lang.language()
+@can_manage_vc
+async def _autoplay_mode_cb(_, query: types.CallbackQuery):
+    chat_id = int(query.data.split()[1])
+    curr_mode = await db.get_autoplay_mode(chat_id)
+    next_mode = {"vibe": "artist", "artist": "trending", "trending": "vibe"}.get(curr_mode, "vibe")
+    await db.set_autoplay_mode(chat_id, next_mode)
+    labels = {"vibe": "🎧 Vibe Radio", "artist": "🎤 Artist Radio", "trending": "🔥 Trending Hits"}
+    await query.answer(f"Autoplay Mode: {labels[next_mode]}", show_alert=True)
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=buttons.controls(chat_id, autoplay=await db.get_autoplay(chat_id), mode=next_mode)
         )
     except Exception:
         pass
@@ -198,3 +218,73 @@ async def _settings_cb(_, query: types.CallbackQuery):
             chat_id,
         )
     )
+
+
+@app.on_callback_query(filters.regex("^stats_") & ~app.bl_users)
+@lang.language()
+async def _stats_cb(_, query: types.CallbackQuery):
+    data = query.data.split("_")[1]
+    if data == "close":
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
+    elif data == "back":
+        admin_count = 0
+        for chat_id in await db.get_chats():
+            try:
+                member = await app.get_chat_member(chat_id, app.me.id)
+                if member.status == enums.ChatMemberStatus.ADMINISTRATOR:
+                    admin_count += 1
+            except Exception:
+                pass
+        text = (
+            "<blockquote><b><emoji id=5231065262228250587>🌐</emoji> ʟ ɪ ʟ ʏ  s ʏ s ᴛ є ϻ\n"
+            "──────────────────\n"
+            "<emoji id=5431757423134121353>✅</emoji> s ᴛ ᴧ ᴛ υ s : σηʟɪηє ᴧηᴅ ʀєᴧᴅʏ\n"
+            "<emoji id=5345905193005371012>⚡</emoji> ᴘ ɪ η ɢ : υʟᴛʀᴧ ғᴧsᴛ\n"
+            f"<emoji id=5363992034728229166>✨</emoji> ᴄ ʜ ᴧ ᴛ s : {admin_count}\n"
+            "──────────────────\n"
+            "<emoji id=6131977542107665315>🔥</emoji> ᴘσᴡєʀєᴅ ʙʏ : ʟ ɪ ʟ ʏ  ϻ υ s ɪ ᴄ</b></blockquote>"
+        )
+        try:
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=buttons.stats_key(),
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+        return
+    elif data == "net":
+        assistants_count = len(userbot.clients)
+        blocked_count = len(db.blacklisted) + len(app.bl_users)
+        chats_count = len(await db.get_chats())
+        users_count = len(await db.get_users())
+        modules_count = len(all_modules)
+        sudoers_count = len(app.sudoers)
+        auto_leave = config.AUTO_LEAVE
+        play_limit = config.DURATION_LIMIT // 60
+        
+        text = (
+            "<blockquote><b><emoji id=5364040533498932357>💎</emoji> ʟɪʟʏ  ϻ ᴧ ɪ η ғ ʀ ᴧ ϻ є\n"
+            "──────────────────\n"
+            f"<emoji id=5855037359371851292>👑</emoji> ᴧ s s ɪ s ᴛ ᴧ η ᴛ s : {assistants_count}\n"
+            f"<emoji id=5424857974784925603>🚫</emoji> ʙ ʟ σ ᴄ ᴋ є ᴅ : {blocked_count}\n"
+            f"<emoji id=5231065262228250587>🌐</emoji> ᴄ ʜ ᴧ ᴛ s : {chats_count}\n"
+            f"<emoji id=5350444080084033572>✨</emoji> υ s є ʀ s : {users_count}\n"
+            f"<emoji id=5345905193005371012>⚡</emoji> ϻ σ ᴅ υ ʟ є s : {modules_count}\n"
+            f"<emoji id=5260553279321944543>😈</emoji> s υ ᴅ σ є ʀ s : {sudoers_count}\n"
+            "──────────────────\n"
+            f"<emoji id=6131874750655369599>🔼</emoji> ᴧ υ ᴛ σ  ʟ є ᴧ ᴠ є : {auto_leave}\n"
+            f"<emoji id=6131977542107665315>🔥</emoji> ᴘ ʟ ᴧ ʏ  ʟ ɪ ϻ ɪ ᴛ : {play_limit} ϻɪηs</b></blockquote>"
+        )
+        try:
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=buttons.stats_net_key(),
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass

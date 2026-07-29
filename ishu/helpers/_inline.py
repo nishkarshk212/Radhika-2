@@ -81,21 +81,32 @@ class Inline:
             # This kurigram build's ButtonStyle only has DEFAULT/PRIMARY/DANGER/
             # SUCCESS — SUCCESS is the green one. (POSITIVE/NEGATIVE don't exist.)
             # Label per user request: small-caps "ᴀᴜᴛᴏᴘʟᴀʏ" + ♾ (U+267E) when on.
-            keyboard.append(
-                [
-                    self.ikb(
-                        text=(
-                            "ᴀᴜᴛᴏᴘʟᴀʏ ♾" if autoplay else "ᴀᴜᴛᴏᴘʟᴀʏ"
+            if autoplay:
+                mode_label = {"vibe": "🎧 Vibe", "artist": "🎤 Artist", "trending": "🔥 Trending"}.get(mode or "vibe", "🎧 Vibe")
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text="ᴀᴜᴛᴏᴘʟᴀʏ ♾",
+                            callback_data=f"autoplay {chat_id}",
+                            style=enums.ButtonStyle.SUCCESS,
                         ),
-                        callback_data=f"autoplay {chat_id}",
-                        style=(
-                            enums.ButtonStyle.SUCCESS
-                            if autoplay
-                            else enums.ButtonStyle.DANGER
+                        self.ikb(
+                            text=f"📻 {mode_label}",
+                            callback_data=f"autoplay_mode {chat_id}",
+                            style=enums.ButtonStyle.PRIMARY,
                         ),
-                    )
-                ]
-            )
+                    ]
+                )
+            else:
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text="ᴀᴜᴛᴏᴘʟᴀʏ",
+                            callback_data=f"autoplay {chat_id}",
+                            style=enums.ButtonStyle.DANGER,
+                        )
+                    ]
+                )
 
         # Cache the resolved panel so the next partial re-render keeps these
         # rows (timer updater <-> autoplay toggle no longer clobber each other).
@@ -117,18 +128,25 @@ class Inline:
                         text=_lang["back"],
                         callback_data="help back",
                         style=enums.ButtonStyle.PRIMARY,
+                        icon_custom_emoji_id="6084584420537275358",
                     ),
                     self.ikb(
                         text=_lang["close"],
                         callback_data="help close",
-                        style=enums.ButtonStyle.DANGER,
+                        style=enums.ButtonStyle.PRIMARY,
+                        icon_custom_emoji_id="6084584420537275358",
                     ),
                 ]
             ]
         else:
             cbs = ["admins", "auth", "blist", "lang", "ping", "play", "queue", "stats", "sudo"]
             buttons = [
-                self.ikb(text=_lang[f"help_{i}"], callback_data=f"help {cb}")
+                self.ikb(
+                    text=_lang[f"help_{i}"],
+                    callback_data=f"help {cb}",
+                    style=enums.ButtonStyle.DANGER,
+                    icon_custom_emoji_id="6327602766885690261",
+                )
                 for i, cb in enumerate(cbs)
             ]
             rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
@@ -142,7 +160,8 @@ class Inline:
             self.ikb(
                 text=f"{name} ({code})",
                 callback_data=f"lang_change {code}",
-                style=enums.ButtonStyle.PRIMARY if code == _lang else enums.ButtonStyle.DEFAULT,
+                style=enums.ButtonStyle.SUCCESS,
+                icon_custom_emoji_id="6327829008582974671",
             )
             for code, name in langs.items()
         ]
@@ -150,7 +169,12 @@ class Inline:
         return self.ikm(rows)
 
     def ping_markup(self, text: str) -> types.InlineKeyboardMarkup:
-        return self.ikm([[self.ikb(text=text, url=config.SUPPORT_CHAT)]])
+        return self.ikm([[self.ikb(
+            text=text,
+            url=config.SUPPORT_CHAT,
+            style=enums.ButtonStyle.DANGER,
+            icon_custom_emoji_id="5422647595635866664",
+        )]])
 
     def play_queued(
         self, chat_id: int, item_id: str, _text: str
@@ -207,22 +231,23 @@ class Inline:
         rows = [
             [
                 self.ikb(
-                    text=lang["add_me"],
+                    text=f"{lang['add_me']} ✦",
                     url=f"https://t.me/{app.username}?startgroup=true",
-                    style=enums.ButtonStyle.PRIMARY,
+                    style=enums.ButtonStyle.SUCCESS,
+                    icon_custom_emoji_id="5469798743043764619",
                 )
             ],
         ]
         if private:
             rows += [
-                [self.ikb(text=lang["help"], callback_data="help", style=enums.ButtonStyle.PRIMARY)],
+                [self.ikb(text=lang["help"], callback_data="help", style=enums.ButtonStyle.SUCCESS, icon_custom_emoji_id="5471921006643800598")],
                 [
-                    self.ikb(text=lang["support"], url=config.SUPPORT_CHAT, style=enums.ButtonStyle.PRIMARY),
-                    self.ikb(text=lang["channel"], url=config.SUPPORT_CHANNEL, style=enums.ButtonStyle.PRIMARY),
+                    self.ikb(text=lang["support"], url=config.SUPPORT_CHAT, style=enums.ButtonStyle.SUCCESS, icon_custom_emoji_id="5422782960120134635"),
+                    self.ikb(text=lang["channel"], url=config.SUPPORT_CHANNEL, style=enums.ButtonStyle.SUCCESS, icon_custom_emoji_id="5422357698228290320"),
                 ]
             ]
         else:
-            rows += [[self.ikb(text=lang["language"], callback_data="language", style=enums.ButtonStyle.PRIMARY)]]
+            rows += [[self.ikb(text=lang["language"], callback_data="language", style=enums.ButtonStyle.PRIMARY, icon_custom_emoji_id="5422826721541914133")]]
         return self.ikm(rows)
 
     def yt_key(self, link: str) -> types.InlineKeyboardMarkup:
@@ -234,3 +259,33 @@ class Inline:
                 ],
             ]
         )
+
+    def stats_key(self) -> types.InlineKeyboardMarkup:
+        return self.ikm([
+            [
+                self.ikb(
+                    text="𝗡𝗘𝗧𝗪𝗢𝗥𝗞 𝗦𝗧𝗔𝗧𝗦",
+                    callback_data="stats_net",
+                    style=enums.ButtonStyle.SUCCESS,
+                    icon_custom_emoji_id="5411400970368216901",
+                )
+            ]
+        ])
+
+    def stats_net_key(self) -> types.InlineKeyboardMarkup:
+        return self.ikm([
+            [
+                self.ikb(
+                    text="𝗕𝗮𝗰𝗸",
+                    callback_data="stats_back",
+                    style=enums.ButtonStyle.PRIMARY,
+                    icon_custom_emoji_id="6084584420537275358",
+                ),
+                self.ikb(
+                    text="𝗖𝗹𝗼𝘀𝗲",
+                    callback_data="stats_close",
+                    style=enums.ButtonStyle.PRIMARY,
+                    icon_custom_emoji_id="6084584420537275358",
+                ),
+            ]
+        ])

@@ -357,6 +357,27 @@ class MongoDB:
             upsert=True,
         )
 
+    async def get_autoplay_mode(self, chat_id: int) -> str:
+        if not hasattr(self, "autoplay_mode"):
+            self.autoplay_mode = {}
+        if chat_id not in self.autoplay_mode:
+            doc = await self.chatsdb.find_one({"_id": chat_id})
+            self.autoplay_mode[chat_id] = (doc or {}).get("autoplay_mode", "vibe")
+        return self.autoplay_mode.get(chat_id, "vibe")
+
+    async def set_autoplay_mode(self, chat_id: int, mode: str = "vibe") -> None:
+        if not hasattr(self, "autoplay_mode"):
+            self.autoplay_mode = {}
+        if mode not in ["vibe", "artist", "trending"]:
+            mode = "vibe"
+        self.autoplay_mode[chat_id] = mode
+        await self.chatsdb.update_one(
+            {"_id": chat_id},
+            {"$set": {"autoplay_mode": mode}},
+            upsert=True,
+        )
+
+
     # SUDO METHODS
     async def add_sudo(self, user_id: int) -> None:
         await self.cache.update_one(

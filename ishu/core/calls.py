@@ -277,6 +277,8 @@ class TgCall(PyTgCalls):
                     )
 
                 media.message_id = message.id
+                if await db.get_autoplay(chat_id) and not queue.get_next(chat_id, check=True):
+                    asyncio.create_task(self._prefetch_autoplay(chat_id, media))
 
         except FileNotFoundError:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
@@ -306,6 +308,76 @@ class TgCall(PyTgCalls):
         await self.play_media(chat_id, msg, media)
 
 
+    async def _prefetch_autoplay(self, chat_id: int, last) -> None:
+        """
+        Background Zero-Gap Pre-fetcher: Silently downloads the next autoplay candidate in advance while current track plays!
+        """
+        try:
+            if getattr(last, "_prefetch_autoplay", None):
+                return
+            if not await db.get_autoplay(chat_id):
+                return
+            if queue.get_next(chat_id, check=True):
+                return
+
+            last_id = getattr(last, "id", None)
+            last_title = getattr(last, "title", None) or ""
+            last_channel = getattr(last, "channel_name", None) or ""
+            clean_title = _normalize_title(last_title)
+            mode = await db.get_autoplay_mode(chat_id)
+
+            candidates: list = []
+            if mode == "artist" and last_channel:
+                candidates = await yt.search_similar_candidates(f"{last_channel} top songs", limit=10)
+            elif mode == "trending":
+                candidates = await yt.search_similar_candidates("top trending songs", limit=10)
+            else:
+                if clean_title:
+                    fast_similar = await yt.search_similar_candidates(f"songs like {clean_title}", limit=8)
+                    if fast_similar:
+                        candidates.extend(fast_similar)
+                if last_id and len(candidates) < 5:
+                    related = await yt.get_related_candidates(last_id, limit=10)
+                    if related:
+                        candidates.extend(related)
+
+            if not candidates:
+                candidates = await yt.search_similar_candidates("top songs", limit=10)
+
+            duration_limit = getattr(config, "DURATION_LIMIT", 7200)
+            curr_queue_ids = [getattr(t, "id", None) for t in queue.get_queue(chat_id) if hasattr(t, "id")]
+
+            valid = []
+            for t in candidates:
+                if not t or not getattr(t, "id", None):
+                    continue
+                tid = t.id
+                if tid == last_id or tid in curr_queue_ids or _is_recent(chat_id, tid, getattr(t, "title", "")):
+                    continue
+                dur = getattr(t, "duration_sec", 0) or 0
+                if dur > 0 and (dur < 20 or dur > duration_limit):
+                    continue
+                valid.append(t)
+
+            if not valid and candidates:
+                _clear_old_history(chat_id)
+                for t in candidates:
+                    if t and getattr(t, "id", None) and t.id != last_id:
+                        valid.append(t)
+
+            if valid:
+                candidate = valid[0]
+                candidate.user = "Autoplay"
+                candidate._chat_id = chat_id
+                cached_path = await yt.download(candidate.id, video=candidate.video)
+                if cached_path:
+                    candidate.file_path = cached_path
+                    last._prefetch_autoplay = candidate
+                    logger.info("Zero-Gap Autoplay Pre-fetch READY for chat %s -> %s (%s)", chat_id, candidate.id, candidate.title)
+        except Exception as e:
+            logger.warning("Zero-Gap Autoplay Pre-fetch failed for chat %s: %s", chat_id, e)
+
+
     async def _autoplay_next(self, chat_id: int, last) -> None:
         """
         Smart Autoplay System: Automatically finds, verifies, and streams a non-repeating related song.
@@ -317,31 +389,35 @@ class TgCall(PyTgCalls):
         _lang = await lang.get_lang(chat_id)
         msg = await app.send_message(chat_id=chat_id, text=_lang["play_searching"], parse_mode=enums.ParseMode.HTML)
 
-        last_id = getattr(last, "id", None)
-        last_title = getattr(last, "title", None) or ""
-        last_channel = getattr(last, "channel_name", None) or ""
+        last_id = getattr(last, "id", None) if last else None
+        last_title = getattr(last, "title", None) or "" if last else ""
+        last_channel = getattr(last, "channel_name", None) or "" if last else ""
         clean_title = _normalize_title(last_title)
+        mode = await db.get_autoplay_mode(chat_id)
 
-        # Build Candidate Pool
         candidates: list = []
-
-        # Tier 1: YouTube Watch Next / Related Recommendations
-        if last_id:
-            try:
-                related = await yt.get_related_candidates(last_id, limit=15)
+        if mode == "artist" and last_channel:
+            candidates = await yt.search_similar_candidates(f"{last_channel} top songs", limit=10)
+        elif mode == "trending":
+            candidates = await yt.search_similar_candidates("top trending songs", limit=10)
+        else:
+            if clean_title:
+                fast_similar = await yt.search_similar_candidates(f"songs like {clean_title}", limit=8)
+                if fast_similar:
+                    candidates.extend(fast_similar)
+            if last_id and len(candidates) < 5:
+                related = await yt.get_related_candidates(last_id, limit=10)
                 if related:
                     candidates.extend(related)
-            except Exception as e:
-                logger.warning("Autoplay Tier 1 failed for %s: %s", last_id, e)
 
-        # Tier 2: Search by Artist + Song Title / Related
         if len(candidates) < 5:
             queries = []
             if last_channel and clean_title:
                 queries.append(f"{last_channel} {clean_title}")
             if clean_title:
-                queries.append(f"songs like {clean_title}")
                 queries.append(f"{clean_title} full song")
+            if not queries:
+                queries.append("top trending songs")
 
             for q in queries:
                 try:
@@ -351,7 +427,6 @@ class TgCall(PyTgCalls):
                 except Exception as e:
                     logger.warning("Autoplay Tier 2 failed for query '%s': %s", q, e)
 
-        # Tier 3: General Expansion / Artist Radio
         if not candidates:
             try:
                 fallback_q = f"{last_channel} top songs" if last_channel else "top trending songs"
@@ -458,8 +533,20 @@ class TgCall(PyTgCalls):
             # last played song so the stream keeps going instead of stopping.
             if await db.get_autoplay(chat_id):
                 last = current_media
-                if last:
-                    await self._autoplay_next(chat_id, last)
+                # Zero-Gap HIT: Use pre-fetched track if available!
+                pre_track = getattr(last, "_prefetch_autoplay", None) if last else None
+                if pre_track and isinstance(pre_track, Track):
+                    pre_track.user = "Autoplay"
+                    pre_track._chat_id = chat_id
+                    _remember(chat_id, pre_track.id, pre_track.title)
+                    queue.force_add(chat_id, pre_track)
+                    _lang = await lang.get_lang(chat_id)
+                    msg = await app.send_message(chat_id=chat_id, text=_lang["play_next"])
+                    pre_track.message_id = msg.id
+                    logger.info("Zero-Gap Autoplay HIT! Instant transition for chat %s -> %s", chat_id, pre_track.id)
+                    return await self.play_media(chat_id, msg, pre_track)
+
+                await self._autoplay_next(chat_id, last)
                 return
             return await self.stop(chat_id)
 
