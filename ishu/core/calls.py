@@ -260,7 +260,11 @@ class TgCall(PyTgCalls):
                     media.user,
                 )
 
-                keyboard = buttons.controls(chat_id, autoplay=await db.get_autoplay(chat_id))
+                keyboard = buttons.controls(
+                    chat_id,
+                    autoplay=await db.get_autoplay(chat_id),
+                    mode=await db.get_autoplay_mode(chat_id),
+                )
 
                 if _thumb:
                     await message.edit_media(

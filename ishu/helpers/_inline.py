@@ -34,6 +34,7 @@ class Inline:
         timer: str = None,
         remove: bool = False,
         autoplay: bool | None = None,
+        mode: str = None,
     ) -> types.InlineKeyboardMarkup:
         # Reuse the last-known rows for any dimension not explicitly passed,
         # so a single-row update (timer tick OR autoplay toggle) preserves the
@@ -48,6 +49,10 @@ class Inline:
             # explicit False (toggle OFF) must win, so only fall back on None.
             if autoplay is None and not remove:
                 autoplay = prev.get("autoplay", False)
+            if mode is None:
+                mode = prev.get("mode", "vibe")
+        if mode is None:
+            mode = "vibe"
 
         keyboard = []
         if status:
@@ -82,18 +87,24 @@ class Inline:
             # SUCCESS — SUCCESS is the green one. (POSITIVE/NEGATIVE don't exist.)
             # Label per user request: small-caps "ᴀᴜᴛᴏᴘʟᴀʏ" + ♾ (U+267E) when on.
             if autoplay:
-                mode_label = {"vibe": "🎧 Vibe", "artist": "🎤 Artist", "trending": "🔥 Trending"}.get(mode or "vibe", "🎧 Vibe")
+                mode_info = {
+                    "vibe": ("Vibe", "5316553657087435063", enums.ButtonStyle.PRIMARY),
+                    "artist": ("Artist", "5233578612665375810", enums.ButtonStyle.DANGER),
+                    "trending": ("Trending", "5317058732356542197", enums.ButtonStyle.SUCCESS),
+                }.get(mode or "vibe", ("Vibe", "5316553657087435063", enums.ButtonStyle.PRIMARY))
                 keyboard.append(
                     [
                         self.ikb(
                             text="ᴀᴜᴛᴏᴘʟᴀʏ ♾",
                             callback_data=f"autoplay {chat_id}",
                             style=enums.ButtonStyle.SUCCESS,
+                            icon_custom_emoji_id="5199785165735367039",
                         ),
                         self.ikb(
-                            text=f"📻 {mode_label}",
+                            text=mode_info[0],
                             callback_data=f"autoplay_mode {chat_id}",
-                            style=enums.ButtonStyle.PRIMARY,
+                            style=mode_info[2],
+                            icon_custom_emoji_id=mode_info[1],
                         ),
                     ]
                 )
@@ -114,6 +125,7 @@ class Inline:
             "status": status,
             "timer": timer,
             "autoplay": autoplay,
+            "mode": mode,
             "remove": remove,
         }
         return self.ikm(keyboard)
