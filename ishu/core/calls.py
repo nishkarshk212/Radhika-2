@@ -22,16 +22,17 @@ from ishu.helpers import Media, Track, buttons, utils
 
 
 def _cleanup_file(media) -> None:
-    """Delete the downloaded file for a media item, if it exists."""
+    """Clear media file_path reference without purging persistent disk cache."""
     if getattr(media, "file_path", None):
         try:
             path = Path(media.file_path)
-            if path.exists():
+            if path.exists() and not (path.parent.name == "downloads" and path.suffix.lower() in [".mp3", ".mp4", ".webm", ".m4a"]):
                 path.unlink()
-                logger.info("Cleaned up file: %s", media.file_path)
+                logger.info("Cleaned up temp file: %s", media.file_path)
         except Exception as e:
-            logger.warning("Failed to delete file %s: %s", media.file_path, e)
+            logger.warning("Failed to clean up file %s: %s", media.file_path, e)
         media.file_path = None
+
 
 
 def _bg_download(media) -> None:
