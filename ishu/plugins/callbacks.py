@@ -171,6 +171,14 @@ async def _youtube_menu_cb(_, query: types.CallbackQuery):
     args = query.data.split()
     chat_id = int(args[1]) if len(args) > 1 else query.message.chat.id
     from ishu.helpers._inline import _panel_state
+    
+    msg = query.message
+    current_caption = msg.caption.html if msg.caption else (msg.text.html if msg.text else None)
+    if current_caption and "YouTube Music Category" not in current_caption:
+        _panel_state[chat_id] = _panel_state.get(chat_id, {})
+        _panel_state[chat_id]["playing_caption"] = current_caption
+
+    active_cat = _panel_state.get(chat_id, {}).get("active_cat", "songs")
     link = _panel_state.get(chat_id, {}).get("link")
     
     menu_text = (
@@ -187,13 +195,13 @@ async def _youtube_menu_cb(_, query: types.CallbackQuery):
         if query.message.caption:
             await query.edit_message_caption(
                 caption=menu_text,
-                reply_markup=buttons.youtube_menu_markup(chat_id, link=link),
+                reply_markup=buttons.youtube_menu_markup(chat_id, active_cat=active_cat, link=link),
                 parse_mode=enums.ParseMode.HTML,
             )
         else:
             await query.edit_message_text(
                 menu_text,
-                reply_markup=buttons.youtube_menu_markup(chat_id, link=link),
+                reply_markup=buttons.youtube_menu_markup(chat_id, active_cat=active_cat, link=link),
                 parse_mode=enums.ParseMode.HTML,
             )
     except Exception:
@@ -206,6 +214,18 @@ async def _yt_cat_cb(_, query: types.CallbackQuery):
     args = query.data.split()
     cat_type = args[1]
     chat_id = int(args[2]) if len(args) > 2 else query.message.chat.id
+    from ishu.helpers._inline import _panel_state
+    
+    _panel_state[chat_id] = _panel_state.get(chat_id, {})
+    _panel_state[chat_id]["active_cat"] = cat_type
+    link = _panel_state.get(chat_id, {}).get("link")
+    
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=buttons.youtube_menu_markup(chat_id, active_cat=cat_type, link=link)
+        )
+    except Exception:
+        pass
     
     query_map = {
         "songs": "top trending hindi punjabi indian songs",
@@ -216,11 +236,11 @@ async def _yt_cat_cb(_, query: types.CallbackQuery):
     }
     search_q = query_map.get(cat_type, "top trending indian songs")
     cat_labels = {
-        "songs": "🎵 Songs",
-        "artists": "🎤 Artists",
-        "albums": "💿 Albums",
-        "playlists": "📑 Playlists",
-        "videos": "🎬 Music Videos",
+        "songs": "Songs",
+        "artists": "Artists",
+        "albums": "Albums",
+        "playlists": "Playlists",
+        "videos": "Music Videos",
     }
     
     await query.answer(f"Fetching {cat_labels.get(cat_type, cat_type)}...", show_alert=False)
@@ -249,22 +269,43 @@ async def _yt_cat_cb(_, query: types.CallbackQuery):
 async def _yt_menu_back_cb(_, query: types.CallbackQuery):
     args = query.data.split()
     chat_id = int(args[1]) if len(args) > 1 else query.message.chat.id
+    from ishu.helpers._inline import _panel_state
+    
     await query.answer()
+    
+    kb = buttons.controls(
+        chat_id,
+        autoplay=await db.get_autoplay(chat_id),
+        mode=await db.get_autoplay_mode(chat_id),
+    )
+    
+    saved_caption = _panel_state.get(chat_id, {}).get("playing_caption")
+    if not saved_caption or "YouTube Music Category" in saved_caption:
+        curr = queue.get_current(chat_id)
+        if curr:
+            _lang = await lang.get_lang(chat_id)
+            short_title = curr.title.split("|")[0].split("(")[0].strip()
+            if len(short_title) > 50:
+                short_title = short_title[:47].rstrip() + "…"
+            saved_caption = _lang["play_media"].format(
+                getattr(curr, "url", config.SUPPORT_CHAT),
+                short_title,
+                getattr(curr, "duration", "3:30"),
+                getattr(curr, "user", "User"),
+            )
+        else:
+            saved_caption = "<b><emoji id=5039827436737397847>✨</emoji> Player Control Panel</b>"
+            
     try:
-        kb = buttons.controls(
-            chat_id,
-            autoplay=await db.get_autoplay(chat_id),
-            mode=await db.get_autoplay_mode(chat_id),
-        )
         if query.message.caption:
             await query.edit_message_caption(
-                caption=query.message.caption.html or "<b>Player Control Panel</b>",
+                caption=saved_caption,
                 reply_markup=kb,
                 parse_mode=enums.ParseMode.HTML,
             )
         else:
             await query.edit_message_text(
-                query.message.text.html or "<b>Player Control Panel</b>",
+                saved_caption,
                 reply_markup=kb,
                 parse_mode=enums.ParseMode.HTML,
             )

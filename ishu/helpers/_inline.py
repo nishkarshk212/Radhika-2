@@ -145,41 +145,44 @@ class Inline:
         }
         return self.ikm(keyboard)
 
-    def youtube_menu_markup(self, chat_id: int, link: str = None) -> types.InlineKeyboardMarkup:
+    def youtube_menu_markup(self, chat_id: int, active_cat: str = "songs", link: str = None) -> types.InlineKeyboardMarkup:
+        def get_style(cat: str):
+            return enums.ButtonStyle.SUCCESS if active_cat == cat else enums.ButtonStyle.DANGER
+
         rows = [
             [
                 self.ikb(
-                    text="🎵 Songs",
+                    text="Songs",
                     callback_data=f"yt_cat songs {chat_id}",
-                    style=enums.ButtonStyle.PRIMARY,
+                    style=get_style("songs"),
                     icon_custom_emoji_id="5321505140199418151",
                 ),
                 self.ikb(
-                    text="🎤 Artists",
+                    text="Artists",
                     callback_data=f"yt_cat artists {chat_id}",
-                    style=enums.ButtonStyle.DANGER,
+                    style=get_style("artists"),
                     icon_custom_emoji_id="5233578612665375810",
                 ),
             ],
             [
                 self.ikb(
-                    text="💿 Albums",
+                    text="Albums",
                     callback_data=f"yt_cat albums {chat_id}",
-                    style=enums.ButtonStyle.PRIMARY,
+                    style=get_style("albums"),
                     icon_custom_emoji_id="5462956611033117422",
                 ),
                 self.ikb(
-                    text="📑 Playlists",
+                    text="Playlists",
                     callback_data=f"yt_cat playlists {chat_id}",
-                    style=enums.ButtonStyle.SUCCESS,
+                    style=get_style("playlists"),
                     icon_custom_emoji_id="6007817446398890097",
                 ),
             ],
             [
                 self.ikb(
-                    text="🎬 Music Videos",
+                    text="Music Videos",
                     callback_data=f"yt_cat videos {chat_id}",
-                    style=enums.ButtonStyle.DANGER,
+                    style=get_style("videos"),
                     icon_custom_emoji_id="5366477429223209600",
                 ),
             ],
@@ -188,7 +191,7 @@ class Inline:
             rows.append(
                 [
                     self.ikb(
-                        text="🔗 Open Direct Link",
+                        text="Open Direct Link",
                         url=link,
                         style=enums.ButtonStyle.DANGER,
                         icon_custom_emoji_id="5321505140199418151",
@@ -198,9 +201,10 @@ class Inline:
         rows.append(
             [
                 self.ikb(
-                    text="🔙 Back to Player",
+                    text="Back to Player",
                     callback_data=f"yt_menu_back {chat_id}",
-                    style=enums.ButtonStyle.PRIMARY,
+                    style=enums.ButtonStyle.DANGER,
+                    icon_custom_emoji_id="6084584420537275358",
                 )
             ]
         )

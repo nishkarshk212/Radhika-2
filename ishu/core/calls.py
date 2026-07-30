@@ -297,6 +297,10 @@ class TgCall(PyTgCalls):
                     media.user,
                 )
 
+                from ishu.helpers._inline import _panel_state
+                _panel_state[chat_id] = _panel_state.get(chat_id, {})
+                _panel_state[chat_id]["playing_caption"] = text
+
                 keyboard = buttons.controls(
                     chat_id,
                     autoplay=await db.get_autoplay(chat_id),
