@@ -129,12 +129,16 @@ def _is_recent(chat_id: int, vid: str | None, title: str | None = None) -> bool:
         return True
     return False
 
-def _clear_old_history(chat_id: int) -> None:
-    """Trim oldest 75% history when candidates are exhausted."""
-    if chat_id in _recent_ids and len(_recent_ids[chat_id]) > 5:
-        del _recent_ids[chat_id][: int(len(_recent_ids[chat_id]) * 0.75)]
-    if chat_id in _recent_titles and len(_recent_titles[chat_id]) > 5:
-        del _recent_titles[chat_id][: int(len(_recent_titles[chat_id]) * 0.75)]
+def _clear_old_history(chat_id: int, keep: int = 30) -> None:
+    """Trim oldest history when candidates are exhausted, keeping the latest 'keep' items."""
+    if chat_id in _recent_ids:
+        hist = _recent_ids[chat_id]
+        if len(hist) > keep:
+            del hist[: len(hist) - keep]
+    if chat_id in _recent_titles:
+        thist = _recent_titles[chat_id]
+        if len(thist) > keep:
+            del thist[: len(thist) - keep]
 
 
 class TgCall(PyTgCalls):
@@ -354,49 +358,80 @@ class TgCall(PyTgCalls):
         await self.play_media(chat_id, msg, media)
 
 
-    async def _prefetch_autoplay(self, chat_id: int, last) -> None:
+    async def _get_autoplay_candidate(self, chat_id: int, last) -> Track | None:
         """
-        Background Zero-Gap Pre-fetcher: Silently downloads the next autoplay candidate in advance while current track plays!
+        Unified Autoplay Selection: Resolves the next candidate according to active mode,
+        applies strict non-repeating filters, and falls back gracefully.
         """
-        try:
-            if getattr(last, "_prefetch_autoplay", None):
-                return
-            if not await db.get_autoplay(chat_id):
-                return
-            if queue.get_next(chat_id, check=True):
-                return
+        last_id = getattr(last, "id", None) if last else None
+        last_title = getattr(last, "title", None) or "" if last else ""
+        last_channel = getattr(last, "channel_name", None) or "" if last else ""
+        clean_title = _normalize_title(last_title)
+        mode = await db.get_autoplay_mode(chat_id)
 
-            last_id = getattr(last, "id", None)
-            last_title = getattr(last, "title", None) or ""
-            last_channel = getattr(last, "channel_name", None) or ""
-            clean_title = _normalize_title(last_title)
-            mode = await db.get_autoplay_mode(chat_id)
+        # 1. Gather all candidates from potential queries based on current configuration
+        candidates = []
+        
+        # Tier 1: Mode Query
+        query_map = {
+            "songs": "top trending hindi punjabi indian songs",
+            "artists": "top indian music artists hits",
+            "albums": "latest indian bollywood albums",
+            "playlists": "top hindi punjabi playlist songs",
+            "videos": "latest official indian music videos",
+        }
+        if mode in query_map:
+            try:
+                candidates = await yt.search_similar_candidates(query_map[mode], limit=12)
+            except Exception as e:
+                logger.warning("Autoplay mode search failed: %s", e)
+        elif mode == "artist" and last_channel:
+            try:
+                candidates = await yt.search_similar_candidates(f"{last_channel} top indian songs", limit=12)
+            except Exception as e:
+                logger.warning("Autoplay artist search failed: %s", e)
+        elif mode == "trending":
+            try:
+                candidates = await yt.search_similar_candidates("top trending hindi punjabi indian songs", limit=12)
+            except Exception as e:
+                logger.warning("Autoplay trending search failed: %s", e)
 
-            candidates: list = []
-            if mode == "artist" and last_channel:
-                candidates = await yt.search_similar_candidates(f"{last_channel} top indian songs", limit=10)
-            elif mode == "trending":
-                candidates = await yt.search_similar_candidates("top trending hindi punjabi indian songs", limit=10)
-            else:
-                if clean_title:
+        # Tier 2: Watch Next / Related Recommendations
+        if len(candidates) < 5:
+            if clean_title:
+                try:
                     fast_similar = await yt.search_similar_candidates(f"songs like {clean_title} indian", limit=8)
                     if fast_similar:
                         candidates.extend(fast_similar)
-                if last_id and len(candidates) < 5:
+                except Exception:
+                    pass
+            if last_id and len(candidates) < 5:
+                try:
                     related = await yt.get_related_candidates(last_id, limit=10)
                     if related:
                         candidates.extend(related)
+                except Exception:
+                    pass
 
-            if not candidates:
-                candidates = await yt.search_similar_candidates("top trending indian songs", limit=10)
+        # Tier 3: Emergency Fallbacks
+        fallback_queries = [
+            f"{last_channel} {clean_title}" if last_channel and clean_title else None,
+            f"{clean_title} full song" if clean_title else None,
+            "top trending hindi punjabi indian songs",
+            "latest indian music hits",
+            "hindi lofi mix songs",
+            "bollywood hits unplugged"
+        ]
+        
+        # Validator function
+        duration_limit = getattr(config, "DURATION_LIMIT", 7200)
+        curr_queue_ids = [getattr(t, "id", None) for t in queue.get_queue(chat_id) if hasattr(t, "id")]
 
-            duration_limit = getattr(config, "DURATION_LIMIT", 7200)
-            curr_queue_ids = [getattr(t, "id", None) for t in queue.get_queue(chat_id) if hasattr(t, "id")]
-
+        def _filter(cand_list: list) -> list:
             valid = []
             seen_in_batch_ids = set()
             seen_in_batch_titles = set()
-            for t in candidates:
+            for t in cand_list:
                 if not t or not getattr(t, "id", None):
                     continue
                 tid = t.id
@@ -415,15 +450,69 @@ class TgCall(PyTgCalls):
                 if norm_title:
                     seen_in_batch_titles.add(norm_title)
                 valid.append(t)
+            return valid
 
-            if not valid and candidates:
-                _clear_old_history(chat_id)
-                for t in candidates:
-                    if t and getattr(t, "id", None) and t.id != last_id:
-                        valid.append(t)
+        # Filter initial list of candidates
+        valid_candidates = _filter(candidates)
 
-            if valid:
-                candidate = valid[0]
+        # Fallback loop: Query wider sources if we still don't have enough valid candidates
+        if not valid_candidates:
+            for q in fallback_queries:
+                if not q:
+                    continue
+                try:
+                    similar = await yt.search_similar_candidates(q, limit=8)
+                    if similar:
+                        valid_candidates = _filter(similar)
+                        if valid_candidates:
+                            break
+                except Exception:
+                    pass
+
+        # Exhaustion fallback: Prune history (preserving the last 30 songs) and re-filter
+        if not valid_candidates and candidates:
+            _clear_old_history(chat_id, keep=30)
+            valid_candidates = _filter(candidates)
+
+        # Final loop: Verify extraction/stream URL compatibility for candidates
+        selected_track = None
+        for candidate in valid_candidates:
+            try:
+                stream_url = await yt.get_stream_url(candidate.id)
+                if stream_url:
+                    candidate.stream_url = stream_url
+                    selected_track = candidate
+                    break
+                else:
+                    path = await yt.download(candidate.id)
+                    if path:
+                        candidate.file_path = path
+                        selected_track = candidate
+                        break
+            except Exception as e:
+                logger.warning("Verification of autoplay candidate %s failed: %s", candidate.id, e)
+                continue
+
+        if not selected_track and valid_candidates:
+            selected_track = valid_candidates[0]
+
+        return selected_track
+
+
+    async def _prefetch_autoplay(self, chat_id: int, last) -> None:
+        """
+        Background Zero-Gap Pre-fetcher: Silently downloads the next autoplay candidate in advance while current track plays!
+        """
+        try:
+            if getattr(last, "_prefetch_autoplay", None):
+                return
+            if not await db.get_autoplay(chat_id):
+                return
+            if queue.get_next(chat_id, check=True):
+                return
+
+            candidate = await self._get_autoplay_candidate(chat_id, last)
+            if candidate:
                 candidate.user = "Autoplay"
                 candidate._chat_id = chat_id
                 cached_path = await yt.download(candidate.id, video=candidate.video)
@@ -446,134 +535,19 @@ class TgCall(PyTgCalls):
         _lang = await lang.get_lang(chat_id)
         msg = await app.send_message(chat_id=chat_id, text=_lang["play_searching"], parse_mode=enums.ParseMode.HTML)
 
-        last_id = getattr(last, "id", None) if last else None
-        last_title = getattr(last, "title", None) or "" if last else ""
-        last_channel = getattr(last, "channel_name", None) or "" if last else ""
-        clean_title = _normalize_title(last_title)
-        mode = await db.get_autoplay_mode(chat_id)
-
-        candidates: list = []
-        if mode == "artist" and last_channel:
-            candidates = await yt.search_similar_candidates(f"{last_channel} top indian songs", limit=10)
-        elif mode == "trending":
-            candidates = await yt.search_similar_candidates("top trending hindi punjabi indian songs", limit=10)
-        else:
-            if clean_title:
-                fast_similar = await yt.search_similar_candidates(f"songs like {clean_title} indian", limit=8)
-                if fast_similar:
-                    candidates.extend(fast_similar)
-            if last_id and len(candidates) < 5:
-                related = await yt.get_related_candidates(last_id, limit=10)
-                if related:
-                    candidates.extend(related)
-
-        if len(candidates) < 5:
-            queries = []
-            if last_channel and clean_title:
-                queries.append(f"{last_channel} {clean_title}")
-            if clean_title:
-                queries.append(f"{clean_title} full song")
-            if not queries:
-                queries.append("top trending hindi indian songs")
-
-            for q in queries:
-                try:
-                    similar = await yt.search_similar_candidates(q, limit=5)
-                    if similar:
-                        candidates.extend(similar)
-                except Exception as e:
-                    logger.warning("Autoplay Tier 2 failed for query '%s': %s", q, e)
-
-        if not candidates:
-            try:
-                fallback_q = f"{last_channel} top songs" if last_channel else "top trending songs"
-                candidates = await yt.search_similar_candidates(fallback_q, limit=10)
-            except Exception as e:
-                logger.warning("Autoplay Tier 3 fallback failed: %s", e)
-
-        # Candidate Validation & Filtering
-        duration_limit = getattr(config, "DURATION_LIMIT", 7200)
-        curr_queue_ids = [getattr(t, "id", None) for t in queue.get_queue(chat_id) if hasattr(t, "id")]
-
-        def _filter(cand_list: list) -> list:
-            valid = []
-            seen_in_batch_ids = set()
-            seen_in_batch_titles = set()
-            for t in cand_list:
-                if not t or not getattr(t, "id", None):
-                    continue
-                tid = t.id
-                ttitle = getattr(t, "title", "") or ""
-                norm_title = _normalize_title(ttitle)
-                if tid == last_id or tid in seen_in_batch_ids or tid in curr_queue_ids:
-                    continue
-                if norm_title and norm_title in seen_in_batch_titles:
-                    continue
-                if _is_recent(chat_id, tid, ttitle):
-                    continue
-                # Duration filter: must be between 20 sec and DURATION_LIMIT
-                dur = getattr(t, "duration_sec", 0) or 0
-                if dur > 0 and (dur < 20 or dur > duration_limit):
-                    continue
-                seen_in_batch_ids.add(tid)
-                if norm_title:
-                    seen_in_batch_titles.add(norm_title)
-                valid.append(t)
-            return valid
-
-        valid_candidates = _filter(candidates)
-
-        # Exhaustion fallback: If all candidates filtered out (history full), clear history and re-filter
-        if not valid_candidates:
-            _clear_old_history(chat_id)
-            valid_candidates = _filter(candidates)
-
-        # Emergency Fallback: Fetch fresh top Indian hits if no valid candidates found
-        if not valid_candidates:
-            _clear_old_history(chat_id)
-            try:
-                emergency_candidates = await yt.search_similar_candidates("top trending hindi punjabi indian songs", limit=10)
-                if emergency_candidates:
-                    valid_candidates = [t for t in emergency_candidates if t and getattr(t, "id", None) and t.id != last_id]
-            except Exception as e:
-                logger.warning("Autoplay emergency fallback search failed: %s", e)
-
-        if not valid_candidates:
-            logger.warning("Autoplay exhausted all search candidates for chat %s", chat_id)
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-            return await self.stop(chat_id)
-
-        # Stream / File Availability Verification Loop
+        # Check if pre-fetched candidate exists on the last track
+        pre_track = getattr(last, "_prefetch_autoplay", None) if last else None
         selected_track = None
-        for candidate in valid_candidates:
-            # Check user queue priority right before streaming
-            if queue.get_queue(chat_id):
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-                return await self.play_next(chat_id)
-
-            try:
-                candidate.stream_url = await yt.get_stream_url(candidate.id)
-                if not candidate.stream_url:
-                    candidate.file_path = await yt.download(candidate.id)
-
-                if candidate.stream_url or candidate.file_path:
-                    selected_track = candidate
-                    break
-            except Exception as err:
-                logger.warning("Autoplay candidate %s stream/download failed: %s", candidate.id, err)
-                continue
-
-        if not selected_track and valid_candidates:
-            # Pick first candidate direct fallback
-            selected_track = valid_candidates[0]
+        if pre_track:
+            if pre_track.file_path or getattr(pre_track, "stream_url", None):
+                selected_track = pre_track
+                logger.info("Zero-Gap Autoplay HIT! Instant transition for chat %s -> %s", chat_id, selected_track.id)
 
         if not selected_track:
+            selected_track = await self._get_autoplay_candidate(chat_id, last)
+
+        if not selected_track:
+            logger.warning("Autoplay exhausted all search candidates for chat %s", chat_id)
             try:
                 await msg.delete()
             except Exception:

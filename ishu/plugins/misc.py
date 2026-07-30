@@ -182,6 +182,9 @@ async def update_timer(length=10, sleep=5):
                 media = queue.get_current(chat_id)
                 if not media:
                     continue
+                from ishu.helpers._inline import _panel_state
+                if _panel_state.get(chat_id, {}).get("menu_open"):
+                    continue
                 duration, message_id = media.duration_sec, media.message_id
                 if not duration or not message_id or not media.time:
                     continue

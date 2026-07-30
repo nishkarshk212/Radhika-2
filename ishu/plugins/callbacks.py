@@ -174,12 +174,13 @@ async def _youtube_menu_cb(_, query: types.CallbackQuery):
     
     msg = query.message
     current_caption = msg.caption.html if msg.caption else (msg.text.html if msg.text else None)
+    _panel_state[chat_id] = _panel_state.get(chat_id, {})
+    _panel_state[chat_id]["menu_open"] = True
     if current_caption and "YouTube Music Category" not in current_caption:
-        _panel_state[chat_id] = _panel_state.get(chat_id, {})
         _panel_state[chat_id]["playing_caption"] = current_caption
 
-    active_cat = _panel_state.get(chat_id, {}).get("active_cat", "songs")
-    link = _panel_state.get(chat_id, {}).get("link")
+    active_cat = _panel_state[chat_id].get("active_cat", "songs")
+    link = _panel_state[chat_id].get("link")
     
     menu_text = (
         "<b><emoji id=5321505140199418151>🔴</emoji> YouTube Music Category & Filter Options:</b>\n\n"
@@ -220,6 +221,11 @@ async def _yt_cat_cb(_, query: types.CallbackQuery):
     _panel_state[chat_id]["active_cat"] = cat_type
     link = _panel_state.get(chat_id, {}).get("link")
     
+    # 1. Update autoplay settings to use this category
+    await db.set_autoplay(chat_id, True)
+    await db.set_autoplay_mode(chat_id, cat_type)
+    
+    # 2. Instantly update button colors on the menu panel
     try:
         await query.edit_message_reply_markup(
             reply_markup=buttons.youtube_menu_markup(chat_id, active_cat=cat_type, link=link)
@@ -227,14 +233,6 @@ async def _yt_cat_cb(_, query: types.CallbackQuery):
     except Exception:
         pass
     
-    query_map = {
-        "songs": "top trending hindi punjabi indian songs",
-        "artists": "top indian music artists hits",
-        "albums": "latest indian bollywood albums",
-        "playlists": "top hindi punjabi playlist songs",
-        "videos": "latest official indian music videos",
-    }
-    search_q = query_map.get(cat_type, "top trending indian songs")
     cat_labels = {
         "songs": "Songs",
         "artists": "Artists",
@@ -243,25 +241,7 @@ async def _yt_cat_cb(_, query: types.CallbackQuery):
         "videos": "Music Videos",
     }
     
-    await query.answer(f"Fetching {cat_labels.get(cat_type, cat_type)}...", show_alert=False)
-    
-    msg = await app.send_message(chat_id=chat_id, text=f"🔍 <b>Fetching {cat_labels.get(cat_type, cat_type)}...</b>", parse_mode=enums.ParseMode.HTML)
-    results = await yt.search_similar_candidates(search_q, limit=5)
-    if not results:
-        return await msg.edit_text("❌ No tracks found for this category.")
-    
-    first_track = results[0]
-    first_track.user = query.from_user.mention
-    first_track._chat_id = chat_id
-    
-    await msg.edit_text(f"▶️ <b>Playing from {cat_labels.get(cat_type, cat_type)}:</b> {first_track.title}")
-    
-    for t in results[1:]:
-        t.user = query.from_user.mention
-        t._chat_id = chat_id
-        queue.add(chat_id, t)
-        
-    await anon.play_media(chat_id, msg, first_track)
+    await query.answer(f"Autoplay set to {cat_labels.get(cat_type, cat_type)} Mode ♾", show_alert=True)
 
 
 @app.on_callback_query(filters.regex(r"^yt_menu_back") & ~app.bl_users)
@@ -270,6 +250,9 @@ async def _yt_menu_back_cb(_, query: types.CallbackQuery):
     args = query.data.split()
     chat_id = int(args[1]) if len(args) > 1 else query.message.chat.id
     from ishu.helpers._inline import _panel_state
+    
+    _panel_state[chat_id] = _panel_state.get(chat_id, {})
+    _panel_state[chat_id]["menu_open"] = False
     
     await query.answer()
     

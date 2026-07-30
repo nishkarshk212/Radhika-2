@@ -122,16 +122,17 @@ class Inline:
                     ]
                 )
 
-            keyboard.append(
-                [
-                    self.ikb(
-                        text="YouTube",
-                        callback_data=f"youtube_menu {chat_id}",
-                        style=enums.ButtonStyle.DANGER,
-                        icon_custom_emoji_id="5321505140199418151",
-                    )
-                ]
-            )
+            if autoplay:
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text="YouTube",
+                            callback_data=f"youtube_menu {chat_id}",
+                            style=enums.ButtonStyle.DANGER,
+                            icon_custom_emoji_id="5321505140199418151",
+                        )
+                    ]
+                )
 
         # Cache the resolved panel so the next partial re-render keeps these
         # rows (timer updater <-> autoplay toggle no longer clobber each other).
