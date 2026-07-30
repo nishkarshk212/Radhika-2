@@ -102,7 +102,7 @@ class Utilities:
         audit trail of what the bot played and from where. The log group is
         skipped for messages sent from inside the log group itself.
         """
-        if not config.PLAY_LOG:
+        if not getattr(config, "PLAY_LOG", True):
             return
         if m.chat.id == app.logger:
             return
