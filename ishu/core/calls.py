@@ -62,9 +62,48 @@ _recent_titles: "dict[int, list[str]]" = {}
 def _normalize_title(title: str | None) -> str:
     if not title:
         return ""
-    cleaned = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title)
-    cleaned = cleaned.split('|')[0].split('-')[0].strip().lower()
+    cleaned = title.lower()
+    cleaned = re.sub(r'[\(\[\{].*?[\)\]\}]', '', cleaned)
+    keywords = [
+        "official video", "official audio", "official music video", "full song", "lyrical video",
+        "lyrics", "remix", "extended", "video song", "audio song", "4k video", "hd video",
+        "studio version", "live performance", "unplugged", "cover", "visualizer", "prod.", "feat.", "ft."
+    ]
+    for kw in keywords:
+        cleaned = cleaned.replace(kw, "")
+    cleaned = re.sub(r'[^\w\s]', ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
+
+def _title_fingerprint(title: str | None) -> set:
+    norm = _normalize_title(title)
+    return set(w for w in norm.split() if len(w) >= 3)
+
+def _is_duplicate_title(chat_id: int, candidate_title: str | None) -> bool:
+    if not candidate_title:
+        return False
+    cand_norm = _normalize_title(candidate_title)
+    if not cand_norm:
+        return False
+
+    cand_words = _title_fingerprint(candidate_title)
+    recent_titles = _recent_titles.get(chat_id, [])
+
+    for past_norm in recent_titles:
+        if not past_norm:
+            continue
+        if cand_norm == past_norm:
+            return True
+        if len(cand_norm) >= 6 and len(past_norm) >= 6:
+            if cand_norm in past_norm or past_norm in cand_norm:
+                return True
+        past_words = set(w for w in past_norm.split() if len(w) >= 3)
+        if cand_words and past_words:
+            intersection = cand_words.intersection(past_words)
+            overlap = len(intersection) / float(min(len(cand_words), len(past_words)))
+            if overlap >= 0.70:
+                return True
+    return False
 
 def _remember(chat_id: int, vid: str | None, title: str | None = None) -> None:
     if vid:
@@ -86,10 +125,8 @@ def _remember(chat_id: int, vid: str | None, title: str | None = None) -> None:
 def _is_recent(chat_id: int, vid: str | None, title: str | None = None) -> bool:
     if vid and vid in _recent_ids.get(chat_id, []):
         return True
-    if title:
-        norm_title = _normalize_title(title)
-        if norm_title and norm_title in _recent_titles.get(chat_id, []):
-            return True
+    if title and _is_duplicate_title(chat_id, title):
+        return True
     return False
 
 def _clear_old_history(chat_id: int) -> None:
@@ -352,15 +389,26 @@ class TgCall(PyTgCalls):
             curr_queue_ids = [getattr(t, "id", None) for t in queue.get_queue(chat_id) if hasattr(t, "id")]
 
             valid = []
+            seen_in_batch_ids = set()
+            seen_in_batch_titles = set()
             for t in candidates:
                 if not t or not getattr(t, "id", None):
                     continue
                 tid = t.id
-                if tid == last_id or tid in curr_queue_ids or _is_recent(chat_id, tid, getattr(t, "title", "")):
+                ttitle = getattr(t, "title", "") or ""
+                norm_title = _normalize_title(ttitle)
+                if tid == last_id or tid in seen_in_batch_ids or tid in curr_queue_ids:
+                    continue
+                if norm_title and norm_title in seen_in_batch_titles:
+                    continue
+                if _is_recent(chat_id, tid, ttitle):
                     continue
                 dur = getattr(t, "duration_sec", 0) or 0
                 if dur > 0 and (dur < 20 or dur > duration_limit):
                     continue
+                seen_in_batch_ids.add(tid)
+                if norm_title:
+                    seen_in_batch_titles.add(norm_title)
                 valid.append(t)
 
             if not valid and candidates:
@@ -444,22 +492,27 @@ class TgCall(PyTgCalls):
 
         def _filter(cand_list: list) -> list:
             valid = []
-            seen_in_batch = set()
+            seen_in_batch_ids = set()
+            seen_in_batch_titles = set()
             for t in cand_list:
                 if not t or not getattr(t, "id", None):
                     continue
                 tid = t.id
-                if tid == last_id or tid in seen_in_batch:
+                ttitle = getattr(t, "title", "") or ""
+                norm_title = _normalize_title(ttitle)
+                if tid == last_id or tid in seen_in_batch_ids or tid in curr_queue_ids:
                     continue
-                if tid in curr_queue_ids:
+                if norm_title and norm_title in seen_in_batch_titles:
                     continue
-                if _is_recent(chat_id, tid, getattr(t, "title", "")):
+                if _is_recent(chat_id, tid, ttitle):
                     continue
                 # Duration filter: must be between 20 sec and DURATION_LIMIT
                 dur = getattr(t, "duration_sec", 0) or 0
                 if dur > 0 and (dur < 20 or dur > duration_limit):
                     continue
-                seen_in_batch.add(tid)
+                seen_in_batch_ids.add(tid)
+                if norm_title:
+                    seen_in_batch_titles.add(norm_title)
                 valid.append(t)
             return valid
 
