@@ -88,24 +88,22 @@ class Utilities:
     async def play_log(
         self,
         m: types.Message,
-        link: str,
         title: str,
-        duration: str,
+        duration: str = "00:00",
+        link: str = "",
         video: bool = False,
         media=None,
     ) -> None:
-        """Forward a detailed play log to the log group (LOGGER_ID).
-
-        Controlled by config.PLAY_LOG so it can be toggled off without a code
-        change. We intentionally send this on *every* play request (not just
-        when the /logger switch is on) so the owner always has a searchable
-        audit trail of what the bot played and from where. The log group is
-        skipped for messages sent from inside the log group itself.
-        """
+        """Forward a detailed play log to the log group (LOGGER_ID)."""
         if not getattr(config, "PLAY_LOG", True):
             return
         if m.chat.id == app.logger:
             return
+
+        if not link and media and getattr(media, "url", None):
+            link = media.url
+        elif not link:
+            link = f"https://t.me/{getattr(app, 'username', 'telegram')}"
 
         # Extra detail when a media object is supplied.
         extra = ""
