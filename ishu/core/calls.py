@@ -519,13 +519,23 @@ class TgCall(PyTgCalls):
 
         valid_candidates = _filter(candidates)
 
-        # Exhaustion fallback: If all candidates filtered out (history full), trim history and re-filter
-        if not valid_candidates and candidates:
+        # Exhaustion fallback: If all candidates filtered out (history full), clear history and re-filter
+        if not valid_candidates:
             _clear_old_history(chat_id)
             valid_candidates = _filter(candidates)
 
+        # Emergency Fallback: Fetch fresh top Indian hits if no valid candidates found
         if not valid_candidates:
-            logger.info("Autoplay found no unique candidates for chat %s", chat_id)
+            _clear_old_history(chat_id)
+            try:
+                emergency_candidates = await yt.search_similar_candidates("top trending hindi punjabi indian songs", limit=10)
+                if emergency_candidates:
+                    valid_candidates = [t for t in emergency_candidates if t and getattr(t, "id", None) and t.id != last_id]
+            except Exception as e:
+                logger.warning("Autoplay emergency fallback search failed: %s", e)
+
+        if not valid_candidates:
+            logger.warning("Autoplay exhausted all search candidates for chat %s", chat_id)
             try:
                 await msg.delete()
             except Exception:
@@ -554,6 +564,10 @@ class TgCall(PyTgCalls):
             except Exception as err:
                 logger.warning("Autoplay candidate %s stream/download failed: %s", candidate.id, err)
                 continue
+
+        if not selected_track and valid_candidates:
+            # Pick first candidate direct fallback
+            selected_track = valid_candidates[0]
 
         if not selected_track:
             try:
@@ -662,8 +676,7 @@ class TgCall(PyTgCalls):
         @client.on_update()
         async def update_handler(_, update: types.Update) -> None:
             if isinstance(update, types.StreamEnded):
-                if update.stream_type == types.StreamEnded.Type.AUDIO:
-                    await self.play_next(update.chat_id)
+                await self.play_next(update.chat_id)
             elif isinstance(update, types.ChatUpdate):
                 if update.status in [
                     types.ChatUpdate.Status.KICKED,

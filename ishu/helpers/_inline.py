@@ -122,17 +122,16 @@ class Inline:
                     ]
                 )
 
-            if link:
-                keyboard.append(
-                    [
-                        self.ikb(
-                            text="YouTube",
-                            url=link,
-                            style=enums.ButtonStyle.DANGER,
-                            icon_custom_emoji_id="5321505140199418151",
-                        )
-                    ]
-                )
+            keyboard.append(
+                [
+                    self.ikb(
+                        text="YouTube",
+                        callback_data=f"youtube_menu {chat_id}",
+                        style=enums.ButtonStyle.DANGER,
+                        icon_custom_emoji_id="5321505140199418151",
+                    )
+                ]
+            )
 
         # Cache the resolved panel so the next partial re-render keeps these
         # rows (timer updater <-> autoplay toggle no longer clobber each other).
@@ -145,6 +144,67 @@ class Inline:
             "remove": remove,
         }
         return self.ikm(keyboard)
+
+    def youtube_menu_markup(self, chat_id: int, link: str = None) -> types.InlineKeyboardMarkup:
+        rows = [
+            [
+                self.ikb(
+                    text="🎵 Songs",
+                    callback_data=f"yt_cat songs {chat_id}",
+                    style=enums.ButtonStyle.PRIMARY,
+                    icon_custom_emoji_id="5321505140199418151",
+                ),
+                self.ikb(
+                    text="🎤 Artists",
+                    callback_data=f"yt_cat artists {chat_id}",
+                    style=enums.ButtonStyle.DANGER,
+                    icon_custom_emoji_id="5233578612665375810",
+                ),
+            ],
+            [
+                self.ikb(
+                    text="💿 Albums",
+                    callback_data=f"yt_cat albums {chat_id}",
+                    style=enums.ButtonStyle.PRIMARY,
+                    icon_custom_emoji_id="5462956611033117422",
+                ),
+                self.ikb(
+                    text="📑 Playlists",
+                    callback_data=f"yt_cat playlists {chat_id}",
+                    style=enums.ButtonStyle.SUCCESS,
+                    icon_custom_emoji_id="6007817446398890097",
+                ),
+            ],
+            [
+                self.ikb(
+                    text="🎬 Music Videos",
+                    callback_data=f"yt_cat videos {chat_id}",
+                    style=enums.ButtonStyle.DANGER,
+                    icon_custom_emoji_id="5366477429223209600",
+                ),
+            ],
+        ]
+        if link:
+            rows.append(
+                [
+                    self.ikb(
+                        text="🔗 Open Direct Link",
+                        url=link,
+                        style=enums.ButtonStyle.DANGER,
+                        icon_custom_emoji_id="5321505140199418151",
+                    )
+                ]
+            )
+        rows.append(
+            [
+                self.ikb(
+                    text="🔙 Back to Player",
+                    callback_data=f"yt_menu_back {chat_id}",
+                    style=enums.ButtonStyle.PRIMARY,
+                )
+            ]
+        )
+        return self.ikm(rows)
 
     def help_markup(
         self, _lang: dict, back: bool = False

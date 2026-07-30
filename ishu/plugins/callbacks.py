@@ -165,6 +165,113 @@ async def _autoplay_mode_cb(_, query: types.CallbackQuery):
         pass
 
 
+@app.on_callback_query(filters.regex(r"^youtube_menu") & ~app.bl_users)
+@lang.language()
+async def _youtube_menu_cb(_, query: types.CallbackQuery):
+    args = query.data.split()
+    chat_id = int(args[1]) if len(args) > 1 else query.message.chat.id
+    from ishu.helpers._inline import _panel_state
+    link = _panel_state.get(chat_id, {}).get("link")
+    
+    menu_text = (
+        "<b><emoji id=5321505140199418151>🔴</emoji> YouTube Music Category & Filter Options:</b>\n\n"
+        "Select a section to browse & stream Indian music:\n"
+        "• <emoji id=5321505140199418151>🎵</emoji> <b>Songs</b> — High Quality Audio Hits\n"
+        "• <emoji id=5233578612665375810>🎤</emoji> <b>Artists</b> — Popular Indian Artists\n"
+        "• <emoji id=5462956611033117422>💿</emoji> <b>Albums</b> — Official Music Albums\n"
+        "• <emoji id=6007817446398890097>📑</emoji> <b>Playlists</b> — Top Indian Charts & Mixes\n"
+        "• <emoji id=5366477429223209600>🎬</emoji> <b>Music Videos</b> — Official HD Music Videos"
+    )
+    await query.answer("YouTube Music Category Options")
+    try:
+        if query.message.caption:
+            await query.edit_message_caption(
+                caption=menu_text,
+                reply_markup=buttons.youtube_menu_markup(chat_id, link=link),
+                parse_mode=enums.ParseMode.HTML,
+            )
+        else:
+            await query.edit_message_text(
+                menu_text,
+                reply_markup=buttons.youtube_menu_markup(chat_id, link=link),
+                parse_mode=enums.ParseMode.HTML,
+            )
+    except Exception:
+        pass
+
+
+@app.on_callback_query(filters.regex(r"^yt_cat\s") & ~app.bl_users)
+@lang.language()
+async def _yt_cat_cb(_, query: types.CallbackQuery):
+    args = query.data.split()
+    cat_type = args[1]
+    chat_id = int(args[2]) if len(args) > 2 else query.message.chat.id
+    
+    query_map = {
+        "songs": "top trending hindi punjabi indian songs",
+        "artists": "top indian music artists hits",
+        "albums": "latest indian bollywood albums",
+        "playlists": "top hindi punjabi playlist songs",
+        "videos": "latest official indian music videos",
+    }
+    search_q = query_map.get(cat_type, "top trending indian songs")
+    cat_labels = {
+        "songs": "🎵 Songs",
+        "artists": "🎤 Artists",
+        "albums": "💿 Albums",
+        "playlists": "📑 Playlists",
+        "videos": "🎬 Music Videos",
+    }
+    
+    await query.answer(f"Fetching {cat_labels.get(cat_type, cat_type)}...", show_alert=False)
+    
+    msg = await app.send_message(chat_id=chat_id, text=f"🔍 <b>Fetching {cat_labels.get(cat_type, cat_type)}...</b>", parse_mode=enums.ParseMode.HTML)
+    results = await yt.search_similar_candidates(search_q, limit=5)
+    if not results:
+        return await msg.edit_text("❌ No tracks found for this category.")
+    
+    first_track = results[0]
+    first_track.user = query.from_user.mention
+    first_track._chat_id = chat_id
+    
+    await msg.edit_text(f"▶️ <b>Playing from {cat_labels.get(cat_type, cat_type)}:</b> {first_track.title}")
+    
+    for t in results[1:]:
+        t.user = query.from_user.mention
+        t._chat_id = chat_id
+        queue.add(chat_id, t)
+        
+    await anon.play_media(chat_id, msg, first_track)
+
+
+@app.on_callback_query(filters.regex(r"^yt_menu_back") & ~app.bl_users)
+@lang.language()
+async def _yt_menu_back_cb(_, query: types.CallbackQuery):
+    args = query.data.split()
+    chat_id = int(args[1]) if len(args) > 1 else query.message.chat.id
+    await query.answer()
+    try:
+        kb = buttons.controls(
+            chat_id,
+            autoplay=await db.get_autoplay(chat_id),
+            mode=await db.get_autoplay_mode(chat_id),
+        )
+        if query.message.caption:
+            await query.edit_message_caption(
+                caption=query.message.caption.html or "<b>Player Control Panel</b>",
+                reply_markup=kb,
+                parse_mode=enums.ParseMode.HTML,
+            )
+        else:
+            await query.edit_message_text(
+                query.message.text.html or "<b>Player Control Panel</b>",
+                reply_markup=kb,
+                parse_mode=enums.ParseMode.HTML,
+            )
+    except Exception:
+        pass
+
+
 @app.on_callback_query(filters.regex("help") & ~app.bl_users)
 @lang.language()
 async def _help(_, query: types.CallbackQuery):
