@@ -255,5 +255,5 @@ if config.AUTO_LEAVE:
     tasks.append(asyncio.create_task(auto_leave()))
 tasks.append(asyncio.create_task(track_time()))
 tasks.append(asyncio.create_task(update_timer()))
-if config.AUTO_CLEANUP:
+if getattr(config, "AUTO_CLEANUP", True):
     tasks.append(asyncio.create_task(auto_cleanup()))
