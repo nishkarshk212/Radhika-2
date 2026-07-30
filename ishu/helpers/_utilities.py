@@ -158,19 +158,24 @@ class Utilities:
            """
            if not getattr(config, "ERROR_LOG", True):
                return
+           import html
            import traceback
 
-           chat_label = chat_title or str(chat_id or "?")
+           chat_label = html.escape(str(chat_title or str(chat_id or "?")))
            source_label = "video" if video else "audio"
+           err_reason = html.escape(str(error)[:800]) if error else "Unknown error"
+           song_title = html.escape(str(title or "—"))
+           tb_text = html.escape(traceback.format_exc()[-1200:])
+
            header = (
                "<blockquote><b>"
                "<emoji id=5364040533498932357>💎</emoji> [ ʟ ɪ ʟ ʏ ϻ ᴧ ɪ n f ʀ ᴧ ϻ є ᴧ s s ɪ s ᴛ ᴧ n ᴛ c ʀ ᴧ s ʜ ] <emoji id=5364040533498932357>💎</emoji>\n"
-               f"<emoji id=5422485795627892255>🧪</emoji> ʀ є ᴧ s σ n : {str(error)[:800]}\n"
+               f"<emoji id=5422485795627892255>🧪</emoji> ʀ є ᴧ s σ n : {err_reason}\n"
                f"<emoji id=5334607938546953071>📮</emoji> ᴄ ʜ ᴧ ᴛ : {chat_label} | "
-               f"<emoji id=5334607938546953071>🎵</emoji> s σ ᴜ ɴ ɢ : {title or '—'}\n"
+               f"<emoji id=5334607938546953071>🎵</emoji> s σ ᴜ ɴ ɢ : {song_title}\n"
                "<emoji id=6131660139729522939>🔥</emoji> s ʏ s ᴛ є ϻ n є є ᴅ s ϻ ᴧ ɪ n ᴛ є n ᴧ n c є ʙ σ s s . . .</b></blockquote>"
            )
-           detail = header + "\n<pre>" + traceback.format_exc()[-1200:] + "</pre>"
+           detail = header + "\n<pre>" + tb_text + "</pre>"
            try:
                await app.send_message(
                    chat_id=(app.logger or chat_id or 0),
