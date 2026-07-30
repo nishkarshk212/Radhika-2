@@ -91,6 +91,7 @@ class Utilities:
         link: str,
         title: str,
         duration: str,
+        video: bool = False,
         media=None,
     ) -> None:
         """Forward a detailed play log to the log group (LOGGER_ID).
