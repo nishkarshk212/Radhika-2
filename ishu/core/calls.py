@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ntgcalls import (ConnectionNotFound, TelegramServerError,
                       RTMPStreamingUnsupported, ConnectionError)
+from pyrogram import enums
 from pyrogram.errors import (ChatSendMediaForbidden, ChatSendPhotosForbidden,
                              MessageIdInvalid)
 from pyrogram.types import InputMediaPhoto, Message
