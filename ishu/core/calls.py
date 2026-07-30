@@ -301,6 +301,7 @@ class TgCall(PyTgCalls):
                     chat_id,
                     autoplay=await db.get_autoplay(chat_id),
                     mode=await db.get_autoplay_mode(chat_id),
+                    link=media.url if (isinstance(media, Track) and getattr(media, "url", None)) else None,
                 )
 
                 if _thumb:
@@ -369,12 +370,12 @@ class TgCall(PyTgCalls):
 
             candidates: list = []
             if mode == "artist" and last_channel:
-                candidates = await yt.search_similar_candidates(f"{last_channel} top songs", limit=10)
+                candidates = await yt.search_similar_candidates(f"{last_channel} top indian songs", limit=10)
             elif mode == "trending":
-                candidates = await yt.search_similar_candidates("top trending songs", limit=10)
+                candidates = await yt.search_similar_candidates("top trending hindi punjabi indian songs", limit=10)
             else:
                 if clean_title:
-                    fast_similar = await yt.search_similar_candidates(f"songs like {clean_title}", limit=8)
+                    fast_similar = await yt.search_similar_candidates(f"songs like {clean_title} indian", limit=8)
                     if fast_similar:
                         candidates.extend(fast_similar)
                 if last_id and len(candidates) < 5:
@@ -383,7 +384,7 @@ class TgCall(PyTgCalls):
                         candidates.extend(related)
 
             if not candidates:
-                candidates = await yt.search_similar_candidates("top songs", limit=10)
+                candidates = await yt.search_similar_candidates("top trending indian songs", limit=10)
 
             duration_limit = getattr(config, "DURATION_LIMIT", 7200)
             curr_queue_ids = [getattr(t, "id", None) for t in queue.get_queue(chat_id) if hasattr(t, "id")]
@@ -449,12 +450,12 @@ class TgCall(PyTgCalls):
 
         candidates: list = []
         if mode == "artist" and last_channel:
-            candidates = await yt.search_similar_candidates(f"{last_channel} top songs", limit=10)
+            candidates = await yt.search_similar_candidates(f"{last_channel} top indian songs", limit=10)
         elif mode == "trending":
-            candidates = await yt.search_similar_candidates("top trending songs", limit=10)
+            candidates = await yt.search_similar_candidates("top trending hindi punjabi indian songs", limit=10)
         else:
             if clean_title:
-                fast_similar = await yt.search_similar_candidates(f"songs like {clean_title}", limit=8)
+                fast_similar = await yt.search_similar_candidates(f"songs like {clean_title} indian", limit=8)
                 if fast_similar:
                     candidates.extend(fast_similar)
             if last_id and len(candidates) < 5:
@@ -469,7 +470,7 @@ class TgCall(PyTgCalls):
             if clean_title:
                 queries.append(f"{clean_title} full song")
             if not queries:
-                queries.append("top trending songs")
+                queries.append("top trending hindi indian songs")
 
             for q in queries:
                 try:

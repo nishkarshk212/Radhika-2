@@ -35,6 +35,7 @@ class Inline:
         remove: bool = False,
         autoplay: bool | None = None,
         mode: str = None,
+        link: str = None,
     ) -> types.InlineKeyboardMarkup:
         # Reuse the last-known rows for any dimension not explicitly passed,
         # so a single-row update (timer tick OR autoplay toggle) preserves the
@@ -51,6 +52,8 @@ class Inline:
                 autoplay = prev.get("autoplay", False)
             if mode is None:
                 mode = prev.get("mode", "vibe")
+            if link is None:
+                link = prev.get("link")
         if mode is None:
             mode = "vibe"
 
@@ -119,6 +122,18 @@ class Inline:
                     ]
                 )
 
+            if link:
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text="YouTube",
+                            url=link,
+                            style=enums.ButtonStyle.DANGER,
+                            icon_custom_emoji_id="5321505140199418151",
+                        )
+                    ]
+                )
+
         # Cache the resolved panel so the next partial re-render keeps these
         # rows (timer updater <-> autoplay toggle no longer clobber each other).
         _panel_state[chat_id] = {
@@ -126,6 +141,7 @@ class Inline:
             "timer": timer,
             "autoplay": autoplay,
             "mode": mode,
+            "link": link,
             "remove": remove,
         }
         return self.ikm(keyboard)
@@ -267,7 +283,12 @@ class Inline:
             [
                 [
                     self.ikb(text="❐", copy_text=link),
-                    self.ikb(text="Youtube", url=link),
+                    self.ikb(
+                        text="YouTube",
+                        url=link,
+                        style=enums.ButtonStyle.DANGER,
+                        icon_custom_emoji_id="5321505140199418151",
+                    ),
                 ],
             ]
         )
