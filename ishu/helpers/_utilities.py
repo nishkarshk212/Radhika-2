@@ -140,40 +140,45 @@ class Utilities:
             logger.warning("play_log send failed: %s", ex)
 
     async def error_log(
-        self,
-        chat_id: int,
-        context: str,
-        error: Exception,
-        media=None,
-    ) -> None:
-        """Forward a playback / download error to the log group (LOGGER_ID).
+           self,
+           chat_id: int | None = None,
+           context: str = "",
+           error: Exception | str | None = None,
+           chat_title: str | None = None,
+           title: str | None = None,
+           video: bool = False,
+           media=None,
+       ) -> None:
+           """Forward a playback / download error to the configured log group.
 
-        Controlled by config.ERROR_LOG. This gives the owner a real-time view
-        of failures (dead stream URLs, download failures, Telegram server
-        errors) instead of having to dig through log.txt.
-        """
-        if not config.ERROR_LOG:
-            return
-        import traceback
+           Controlled by config.ERROR_LOG. This gives the owner a real-time view
+           of failures (dead stream URLs, download failures, Telegram server
+           errors) instead of having to dig through log.txt.
+           """
+           if not getattr(config, "ERROR_LOG", True):
+               return
+           import traceback
 
-        detail = (
-            f"⚠️ <b>Playback / Download Error</b>\n\n"
-            f"<b>Bot:</b> {app.name}\n"
-            f"<b>Chat:</b> <code>{chat_id}</code>\n"
-            f"<b>Context:</b> {context}\n"
-            f"<b>Type:</b> <code>{type(error).__name__}</code>\n"
-            f"<b>Error:</b> <code>{str(error)[:800]}</code>"
-        )
-        if media is not None:
-            vid = getattr(media, "id", None)
-            if vid:
-                detail += f"\n<b>Video ID:</b> <code>{vid}</code>"
-            detail += f"\n<b>Source:</b> {'file' if getattr(media, 'file_path', None) else ('stream' if getattr(media, 'stream_url', None) else 'none')}"
-        detail += f"\n<pre>{traceback.format_exc()[-1500:]}</pre>"
-        try:
-            await app.send_message(chat_id=app.logger, text=detail)
-        except Exception as ex:
-            logger.warning("error_log send failed: %s", ex)
+           chat_label = chat_title or str(chat_id or "?")
+           source_label = "video" if video else "audio"
+           header = (
+               "<blockquote><b>"
+               "<emoji id=5364040533498932357>💎</emoji> [ ʟ ɪ ʟ ʏ ϻ ᴧ ɪ n f ʀ ᴧ ϻ є ᴧ s s ɪ s ᴛ ᴧ n ᴛ c ʀ ᴧ s ʜ ] <emoji id=5364040533498932357>💎</emoji>\n"
+               f"<emoji id=5422485795627892255>🧪</emoji> ʀ є ᴧ s σ n : {str(error)[:800]}\n"
+               f"<emoji id=5334607938546953071>📮</emoji> ᴄ ʜ ᴧ ᴛ : {chat_label} | "
+               f"<emoji id=5334607938546953071>🎵</emoji> s σ ᴜ ɴ ɢ : {title or '—'}\n"
+               "<emoji id=6131660139729522939>🔥</emoji> s ʏ s ᴛ є ϻ n є є ᴅ s ϻ ᴧ ɪ n ᴛ є n ᴧ n c є ʙ σ s s . . .</b></blockquote>"
+           )
+           detail = header + "\n<pre>" + traceback.format_exc()[-1200:] + "</pre>"
+           try:
+               await app.send_message(
+                   chat_id=(app.logger or chat_id or 0),
+                   text=detail,
+                   parse_mode=enums.ParseMode.HTML,
+               )
+           except Exception as ex:
+               logger.warning("error_log send failed: %s", ex)
+
 
     async def send_log(self, m: types.Message, chat: bool = False) -> None:
         if chat:
