@@ -88,17 +88,52 @@ class Utilities:
     async def play_log(
         self,
         m: types.Message,
-        title: str,
-        duration: str = "00:00",
-        link: str = "",
-        video: bool = False,
-        media=None,
+        *args,
+        **kwargs
     ) -> None:
-        """Forward a detailed play log to the log group (LOGGER_ID)."""
+        """Forward a detailed play log to the log group (LOGGER_ID) safely supporting all parameter signatures."""
         if not getattr(config, "PLAY_LOG", True):
             return
         if m.chat.id == app.logger:
             return
+
+        # Safe parameter resolution
+        link = ""
+        title = ""
+        duration = "00:00"
+        video = False
+        media = None
+
+        # Resolve positional args:
+        # If called as: play_log(m, sent.link, file.title, file.duration)
+        if len(args) >= 3:
+            link = args[0]
+            title = args[1]
+            duration = args[2]
+        elif len(args) == 2:
+            link = args[0]
+            title = args[1]
+        elif len(args) == 1:
+            title = args[0]
+
+        # Override or populate from kwargs
+        if "link" in kwargs:
+            link = kwargs["link"]
+        if "title" in kwargs:
+            title = kwargs["title"]
+        if "duration" in kwargs:
+            duration = kwargs["duration"]
+        if "video" in kwargs:
+            video = bool(kwargs["video"])
+        if "media" in kwargs:
+            media = kwargs["media"]
+
+        # Normalize link/title order if they were swapped:
+        if title and str(title).startswith("http") and link and not str(link).startswith("http"):
+            link, title = title, link
+        elif not link and title and str(title).startswith("http"):
+            link = title
+            title = "Track"
 
         if not link and media and getattr(media, "url", None):
             link = media.url
@@ -112,7 +147,7 @@ class Utilities:
                 "stream" if getattr(media, "stream_url", None) else "fetching"
             )
             extra = (
-                f"\n<b>Video:</b> {'yes' if getattr(media, 'video', False) else 'no'}"
+                f"\n<b>Video:</b> {'yes' if getattr(media, 'video', video) else 'no'}"
                 f"\n<b>Source:</b> {source}"
             )
             vid = getattr(media, "id", None)
