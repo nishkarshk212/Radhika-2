@@ -6,6 +6,7 @@
 import os
 from random import randint
 from time import time
+from datetime import datetime, timezone
 import certifi
 
 from pymongo import AsyncMongoClient
@@ -53,6 +54,7 @@ class MongoDB:
         self.users = []
         self.usersdb = self.db.users
         self.song_cachedb = self.db.song_cache
+        self.music_cachedb = self.storage_db.music_cache
 
     async def connect(self) -> None:
         """Check if we can connect to the database.
@@ -65,6 +67,10 @@ class MongoDB:
             await self.mongo.admin.command("ping")
             logger.info(f"Database connection successful. ({time() - start:.2f}s)")
             await self.load_cache()
+            try:
+                await self.music_cachedb.create_index("last_played")
+            except Exception:
+                pass
         except Exception as e:
             raise SystemExit(f"Database connection failed: {type(e).__name__}") from e
 
@@ -161,6 +167,88 @@ class MongoDB:
             self.assistant[chat_id] = num
 
         return {1: userbot.one, 2: userbot.two, 3: userbot.three}.get(num)
+
+
+    # ULTRA-FAST HYBRID MUSIC CACHE METHODS
+    async def get_music_cache(self, video_id: str, is_video: bool = False) -> dict | None:
+        """Get full metadata document for a song from shared MongoDB."""
+        try:
+            key = f"{video_id}_v" if is_video else f"{video_id}_a"
+            return await self.music_cachedb.find_one({"_id": key})
+        except Exception as e:
+            logger.warning("get_music_cache failed for %s: %s", video_id, e)
+            return None
+
+    async def save_music_cache(
+        self,
+        video_id: str,
+        title: str,
+        duration: int,
+        file_path: str,
+        file_size: int,
+        file_id: str,
+        file_unique_id: str,
+        message_id: int,
+        channel_id: int,
+        added_by: int = 0,
+        is_video: bool = False,
+    ) -> None:
+        """Store song metadata in shared MongoDB as the single source of truth."""
+        try:
+            key = f"{video_id}_v" if is_video else f"{video_id}_a"
+            now_iso = datetime.now(timezone.utc).isoformat()
+            doc = {
+                "_id": key,
+                "video_id": video_id,
+                "title": title,
+                "duration": duration,
+                "file_path": file_path,
+                "file_size": file_size,
+                "file_id": file_id,
+                "file_unique_id": file_unique_id,
+                "message_id": message_id,
+                "channel_id": channel_id,
+                "added_by": added_by,
+                "is_video": is_video,
+                "play_count": 1,
+                "last_played": now_iso,
+                "created_at": now_iso,
+            }
+            await self.music_cachedb.update_one(
+                {"_id": key},
+                {"$set": doc},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error("save_music_cache failed for %s: %s", video_id, e)
+
+    async def update_music_stats(self, video_id: str, is_video: bool = False) -> None:
+        """Atomically increment play_count and update last_played timestamp."""
+        try:
+            key = f"{video_id}_v" if is_video else f"{video_id}_a"
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await self.music_cachedb.update_one(
+                {"_id": key},
+                {
+                    "$inc": {"play_count": 1},
+                    "$set": {"last_played": now_iso},
+                },
+            )
+        except Exception as e:
+            logger.warning("update_music_stats failed for %s: %s", video_id, e)
+
+    async def update_music_file_id(
+        self, video_id: str, file_id: str, file_unique_id: str = "", is_video: bool = False
+    ) -> None:
+        """Update file_id and file_unique_id in MongoDB when re-indexed or restored."""
+        try:
+            key = f"{video_id}_v" if is_video else f"{video_id}_a"
+            update_data = {"file_id": file_id}
+            if file_unique_id:
+                update_data["file_unique_id"] = file_unique_id
+            await self.music_cachedb.update_one({"_id": key}, {"$set": update_data})
+        except Exception as e:
+            logger.warning("update_music_file_id failed for %s: %s", video_id, e)
 
     # TELEGRAM STORAGE CHANNEL FILE_ID CACHE
     async def get_song_file_id(self, video_id: str, is_video: bool = False) -> str | None:

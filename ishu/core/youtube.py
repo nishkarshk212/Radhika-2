@@ -889,8 +889,78 @@ class YouTube:
             logger.warning("Failed to store %s in dump channel: %s", video_id, e)
 
 
+
+
+    async def _raw_cold_download(self, video_id: str, video: bool = False) -> str | None:
+        """Internal helper for cold YouTube download when cache is completely missing."""
+        link = _normalize_youtube_link(video_id, self.base)
+        try:
+            result, downloader = await _download_with_fallback(
+                link, "video" if video else "audio"
+            )
+            if result:
+                self.dl_stats[downloader] = self.dl_stats.get(downloader, 0) + 1
+                logger.info(
+                    "Cold YouTube.download success: %s (%s) via %s",
+                    video_id,
+                    "video" if video else "audio",
+                    downloader,
+                )
+            else:
+                self.dl_stats["failed"] += 1
+            return result
+        except Exception as e:
+            self.dl_stats["failed"] += 1
+            logger.warning("Cold YouTube.download error for '%s': %s", video_id, e)
+            return None
+
     # ── Download (main method called by play.py / calls.py) ──────────────────
     async def download(
+        self,
+        video_id: str,
+        video: bool = False,
+        title: str | None = None,
+    ) -> str | None:
+        """
+        Download audio/video by video_id using ultra-fast HybridCacheManager.
+        Priority: Local SSD (50-300ms) -> Telegram Dump Backup (1-3s) -> Cold YT Download (5-20s).
+        Returns file path or None.
+        """
+        from ishu.core.cache_manager import cache_manager
+
+        self.dl_stats["total_requests"] += 1
+
+        async def _dl_wrapper(vid: str, is_vid: bool):
+            return await self._raw_cold_download(vid, is_vid)
+
+        return await cache_manager.get_or_fetch(
+            video_id=video_id,
+            title=title or "",
+            duration=0,
+            is_video=video,
+            downloader_fn=_dl_wrapper,
+        )
+
+    async def prefetch_song(
+        self,
+        video_id: str,
+        title: str | None = None,
+        video: bool = False,
+    ) -> None:
+        """Background prefetch for upcoming songs in queue."""
+        from ishu.core.cache_manager import cache_manager
+
+        async def _dl_wrapper(vid: str, is_vid: bool):
+            return await self._raw_cold_download(vid, is_vid)
+
+        await cache_manager.prefetch_song(
+            video_id=video_id,
+            title=title or "",
+            is_video=video,
+            downloader_fn=_dl_wrapper,
+        )
+
+def download(
         self,
         video_id: str,
         video: bool = False,
