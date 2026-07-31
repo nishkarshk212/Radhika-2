@@ -18,7 +18,7 @@ async def on_join_request(client, request: types.ChatJoinRequest):
     - Sends a private message to the user acknowledging their request.
     """
     chat = request.chat
-    user = request.user
+    user = request.from_user
 
     logger.info("New join request received in chat %s (%s) from user %s (%s)", chat.title, chat.id, user.first_name, user.id)
 
