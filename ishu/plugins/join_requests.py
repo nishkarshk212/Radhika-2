@@ -187,7 +187,7 @@ async def handle_join_request_callback(client, callback: types.CallbackQuery):
 
 # ── Personal welcome PM when a user actually joins the group ──
 
-@app.on_chat_member_update()
+@app.on_chat_member_updated()
 async def on_user_joined_group(client, update: types.ChatMemberUpdated):
     """
     Sends a personal welcome PM to any user who is added to or joins a group
