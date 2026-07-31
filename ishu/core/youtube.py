@@ -344,6 +344,17 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
         "--no-warnings",
         "-q",
     ]
+    # YouTube bot-checks the default `web` client hardest; the mobile/TV clients
+    # (tv, ios, android, web_safari, mweb) routinely bypass the "Sign in to
+    # confirm you're not a bot" check with no cookies or proxy needed. Tune the
+    # list via the YT_PLAYER_CLIENTS env var (comma-separated).
+    _clients = [
+        c.strip()
+        for c in os.environ.get("YT_PLAYER_CLIENTS", _DEFAULT_PLAYER_CLIENTS).split(",")
+        if c.strip()
+    ]
+    if _clients:
+        cmd += ["--extractor-args", f"youtube:player_client={','.join(_clients)}"]
     cookie = cookie_txt_file()
     if cookie:
         cmd.extend(["--cookies", cookie])

@@ -155,13 +155,50 @@ class HybridCacheManager:
 
     async def _restore_from_telegram(self, doc: dict, target_path: str) -> bool:
         """
-        Restore a missing local file from Telegram dump channel using file_id or message_id.
+        Restore a missing local file from the Telegram dump channel.
+
+        The message_id path is tried FIRST and the bare file_id SECOND. This is
+        deliberate: all bots share one dump channel + one SharedStorage MongoDB,
+        so a file_id written by bot A is routinely stale (FILE_REFERENCE_EXPIRED)
+        for bot B. Re-fetching the message first yields a fresh, bot-specific
+        file_reference that always works, and we persist that refreshed file_id
+        back to MongoDB as a best-effort fast path for next time.
         """
         file_id = doc.get("file_id")
         channel_id = doc.get("channel_id") or getattr(config, "STORAGE_GROUP_ID", 0)
         message_id = doc.get("message_id")
 
-        # Attempt 1: Fast direct restoration using file_id
+        async def _persist_fresh_id(msg) -> None:
+            media = msg.audio or msg.video or msg.document
+            if media and media.file_id:
+                try:
+                    await db.update_music_file_id(
+                        video_id=doc.get("video_id", doc.get("_id")),
+                        file_id=media.file_id,
+                        file_unique_id=getattr(media, "file_unique_id", ""),
+                        is_video=doc.get("is_video", False),
+                    )
+                except Exception as e:
+                    logger.warning("Failed to persist refreshed file_id for %s: %s", doc.get("_id"), e)
+
+        # Attempt 1 (primary): fetch the message -> fresh file_reference -> download.
+        # Immune to cross-bot file_id expiry because get_messages re-resolves it.
+        if channel_id and message_id:
+            try:
+                logger.info("Restoring media via message_id (%s:%s)", channel_id, message_id)
+                msg = await app.get_messages(channel_id, message_id)
+                if msg and (msg.audio or msg.video or msg.document):
+                    path = await app.download_media(msg, file_name=target_path)
+                    if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                        await _persist_fresh_id(msg)
+                        logger.info("Successfully restored %s via message_id.", doc.get("_id"))
+                        return True
+            except Exception as e:
+                logger.warning("Telegram message_id restoration failed: %s", e)
+
+        # Attempt 2 (fallback): the previously-cached file_id, when the message
+        # lookup itself failed (e.g. message deleted). Often stale across bots,
+        # but cheap and occasionally works for the bot that originally stored it.
         if file_id:
             try:
                 logger.info("Restoring media via file_id (%s...)", file_id[:15])
@@ -171,28 +208,6 @@ class HybridCacheManager:
                     return True
             except Exception as e:
                 logger.warning("Telegram file_id restoration failed: %s", e)
-
-        # Attempt 2: Fallback restoration using channel_id + message_id
-        if channel_id and message_id:
-            try:
-                logger.info("Restoring media via message_id (%s:%s)", channel_id, message_id)
-                msg = await app.get_messages(channel_id, message_id)
-                if msg and (msg.audio or msg.video or msg.document):
-                    path = await app.download_media(msg, file_name=target_path)
-                    if path and os.path.exists(path) and os.path.getsize(path) > 0:
-                        # Update fresh file_id in MongoDB
-                        media = msg.audio or msg.video or msg.document
-                        if media and media.file_id:
-                            await db.update_music_file_id(
-                                video_id=doc.get("video_id", doc.get("_id")),
-                                file_id=media.file_id,
-                                file_unique_id=getattr(media, "file_unique_id", ""),
-                                is_video=doc.get("is_video", False)
-                            )
-                        logger.info("Successfully restored %s via message_id.", doc.get("_id"))
-                        return True
-            except Exception as e:
-                logger.error("Telegram message_id restoration failed: %s", e)
 
         return False
 

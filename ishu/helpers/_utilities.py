@@ -216,7 +216,19 @@ class Utilities:
                    parse_mode=enums.ParseMode.HTML,
                )
            except Exception as ex:
-               logger.warning("error_log send failed: %s", ex)
+               # The rich HTML message embeds custom-emoji <emoji id=...> entities
+               # that Telegram rejects with DOCUMENT_INVALID when the emoji set
+               # is unavailable, silently dropping the error report. Fall back to
+               # a plain-text message so the owner still gets notified.
+               logger.warning("error_log HTML send failed: %s — retrying as plain text", ex)
+               try:
+                   await app.send_message(
+                       chat_id=(app.logger or chat_id or 0),
+                       text=f"[ERROR] {source_label} | chat: {chat_label} | song: {song_title}\n"
+                        f"reason: {err_reason}\n\n{tb_text}",
+                   )
+               except Exception as ex2:
+                   logger.warning("error_log plain-text send also failed: %s", ex2)
 
 
     async def send_log(self, m: types.Message, chat: bool = False) -> None:
