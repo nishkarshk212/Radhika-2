@@ -6,7 +6,7 @@ import asyncio
 import random
 from pyrogram import enums, filters, types
 
-from ishu import app, boot, config, db, lang
+from ishu import app, boot, config, db, lang, logger
 from ishu.helpers import buttons, utils
 
 
