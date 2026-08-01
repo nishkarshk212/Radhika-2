@@ -195,7 +195,6 @@ class TgCall(PyTgCalls):
         # the call from dropping (and the assistant from leaving the GC) when an
         # old URL silently dies mid-play.
         media_path = media.file_path
-        used_stream = bool(media.stream_url) and not media.file_path
 
         if not media_path and isinstance(media, Track):
             cached_file = await yt.download(media.id, video=media.video)
@@ -224,11 +223,6 @@ class TgCall(PyTgCalls):
                     config=types.GroupCallConfig(auto_start=True),
                 )
                 stream_success = True
-
-                # If we started via stream URL, kick off a background download
-                # so that the file is cached and cleanup works normally.
-                if used_stream and isinstance(media, Track):
-                    _bg_download(media)
 
             except Exception as e:
                 logger.warning("Playback failed for %s: %s. Falling back to download.", getattr(media, "id", "?"), e)
@@ -604,20 +598,15 @@ class TgCall(PyTgCalls):
         msg = await app.send_message(chat_id=chat_id, text=_lang["play_next"])
 
         # ── Resolve playback source for the next track ────────────────────────
-        # Priority: existing file_path → existing stream_url → re-fetch stream
-        # URL → download. We always try to ensure a valid source here; relying
-        # on a stale (expired) stream_url alone is what caused the call to drop
-        # and the assistant to leave the GC. (If only a stale URL remains,
-        # play_media() will download + play the file when the URL fails.)
+        # Priority: existing file_path → cached local file → fresh download.
         if not media.file_path:
             fname = f"downloads/{media.id}.{'mp4' if media.video else 'mp3'}"
             if Path(fname).exists():
                 media.file_path = fname
-            # If we still have nothing usable, fall back to a local download.
-            if not media.file_path and not media.stream_url:
+            else:
                 media.file_path = await yt.download(media.id, video=media.video)
 
-        if not media.stream_url and not media.file_path:
+        if not media.file_path:
             await msg.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.play_next(chat_id)
 

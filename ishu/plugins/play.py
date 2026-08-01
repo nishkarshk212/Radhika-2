@@ -26,7 +26,7 @@ async def _background_download_task(track) -> None:
                 logger.info("Background: file download complete for %s → %s", track.id, path)
             else:
                 logger.warning(
-                    "Background: file download failed for %s — will use stream URL",
+                    "Background: file download failed for %s",
                     track.id,
                 )
                 await utils.error_log(
@@ -168,7 +168,7 @@ async def play_hndlr(
 
             return
 
-    # ── Immediate play: prefer a cached file, else get a fresh stream URL ─────
+    # ── Immediate play: prefer a cached file, else download fresh ───────────
     if not file.file_path:
         fname = f"downloads/{file.id}.{'mp4' if video else 'mp3'}"
         if Path(fname).exists():
