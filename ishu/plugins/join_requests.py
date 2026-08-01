@@ -194,28 +194,27 @@ async def on_user_joined_group(client, update: types.ChatMemberUpdated):
     where the bot is an admin. Only fires for *new* additions (old_status is
     Left / Banned, new_status is Member / Administrator).
     """
+    # ChatMemberUpdated fires on EVERY membership change (joins, leaves, bans,
+    # restrictions, admin/promo edits). old_chat_member / new_chat_member can
+    # each be None depending on the event, so guard early to avoid NoneType
+    # crashes and to keep this handler quiet for events we don't care about.
     old = update.old_chat_member
     new = update.new_chat_member
-    user = update.from_user or update.new_chat_member.user
+    if new is None:
+        return  # no target member → nothing to welcome
+    user_obj = new.user
+    if user_obj is None or getattr(user_obj, "is_bot", False) or getattr(user_obj, "is_deleted", False):
+        return  # skip bots / deleted accounts
 
-    # Only trigger on: Left/Banned → Member/Admin
-    if new.status not in (
-        enums.ChatMemberStatus.MEMBER,
-        enums.ChatMemberStatus.ADMINISTRATOR,
-    ):
+    # Only trigger on a real NEW addition: old was Left/Banned/None → now Member/Admin
+    new_status = new.status
+    if new_status not in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR):
         return
-    if old.status not in (
-        enums.ChatMemberStatus.LEFT,
-        enums.ChatMemberStatus.BANNED,
-    ):
+    old_status = old.status if old else enums.ChatMemberStatus.LEFT
+    if old_status not in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
         return
 
     chat = update.chat
-    user_obj = update.new_chat_member.user
-
-    # Skip bots and self-joins
-    if user_obj.is_bot or user_obj.is_deleted:
-        return
 
     welcome_text = (
         f"🎉 <b>Welcome to {chat.title}!</b>\n\n"
