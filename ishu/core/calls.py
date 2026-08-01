@@ -202,12 +202,6 @@ class TgCall(PyTgCalls):
             if cached_file:
                 media.file_path = cached_file
                 media_path = cached_file
-            else:
-                media_path = await yt.get_stream_url(media.id, video=media.video)
-                if media_path:
-                    media.stream_url = media_path
-                    used_stream = True
-
         # ── Step 2: Attempt playback ──────────────────────────────────────────
         stream_success = False
         if media_path:
@@ -478,17 +472,11 @@ class TgCall(PyTgCalls):
         selected_track = None
         for candidate in valid_candidates:
             try:
-                stream_url = await yt.get_stream_url(candidate.id)
-                if stream_url:
-                    candidate.stream_url = stream_url
+                path = await yt.download(candidate.id)
+                if path:
+                    candidate.file_path = path
                     selected_track = candidate
                     break
-                else:
-                    path = await yt.download(candidate.id)
-                    if path:
-                        candidate.file_path = path
-                        selected_track = candidate
-                        break
             except Exception as e:
                 logger.warning("Verification of autoplay candidate %s failed: %s", candidate.id, e)
                 continue
@@ -625,9 +613,6 @@ class TgCall(PyTgCalls):
             fname = f"downloads/{media.id}.{'mp4' if media.video else 'mp3'}"
             if Path(fname).exists():
                 media.file_path = fname
-            elif not media.stream_url:
-                # No usable file yet and no cached URL — fetch a fresh one.
-                media.stream_url = await yt.get_stream_url(media.id, video=media.video)
             # If we still have nothing usable, fall back to a local download.
             if not media.file_path and not media.stream_url:
                 media.file_path = await yt.download(media.id, video=media.video)
@@ -669,10 +654,6 @@ class TgCall(PyTgCalls):
                     media = queue.get_current(update.chat_id)
                     if media and isinstance(media, Track):
                         try:
-                            if not media.file_path:
-                                media.stream_url = await yt.get_stream_url(
-                                    media.id, video=media.video
-                                )
                             await self.replay(update.chat_id)
                             return
                         except Exception as e:
