@@ -196,9 +196,9 @@ class HybridCacheManager:
             except Exception as e:
                 logger.warning("Telegram message_id restoration failed: %s", e)
 
-        # Attempt 2 (fallback): the previously-cached file_id, when the message
-        # lookup itself failed (e.g. message deleted). Often stale across bots,
-        # but cheap and occasionally works for the bot that originally stored it.
+        # Attempt 2 (fallback): the previously-cached file_id. Often stale across
+        # bots (the embedded file_reference expires), but cheap and works for the
+        # bot that originally stored it within the reference lifetime.
         if file_id:
             try:
                 logger.info("Restoring media via file_id (%s...)", file_id[:15])
@@ -208,6 +208,31 @@ class HybridCacheManager:
                     return True
             except Exception as e:
                 logger.warning("Telegram file_id restoration failed: %s", e)
+                # Self-heal: the file_reference embedded in the stored file_id has
+                # expired (FILE_REFERENCE_X_EXPIRED). Re-fetch the message to get a
+                # fresh reference and retry. This is what makes cross-bot restore
+                # reliable when all 8 bots share one dump channel + MongoDB.
+                if channel_id and message_id:
+                    try:
+                        logger.info(
+                            "file_id expired \u2014 refreshing via message (%s:%s)",
+                            channel_id, message_id,
+                        )
+                        msg = await app.get_messages(channel_id, message_id)
+                        if msg and (msg.audio or msg.video or msg.document):
+                            path = await app.download_media(msg, file_name=target_path)
+                            if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                                await _persist_fresh_id(msg)
+                                logger.info(
+                                    "Successfully restored %s after file_reference refresh.",
+                                    doc.get("_id"),
+                                )
+                                return True
+                    except Exception as e2:
+                        logger.warning(
+                            "file_reference refresh also failed for %s: %s",
+                            doc.get("_id"), e2,
+                        )
 
         return False
 
