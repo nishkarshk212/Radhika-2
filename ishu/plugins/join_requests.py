@@ -6,8 +6,6 @@ import asyncio
 from pyrogram import enums, filters, types
 from ishu import app, config, db, logger
 
-ACCEPT_EMOJI_ID = "6296367896398399651"
-DECLINE_EMOJI_ID = "6298671811345254603"
 
 
 @app.on_chat_join_request()
@@ -48,9 +46,9 @@ async def on_join_request(client, request: types.ChatJoinRequest):
         f"Admins, please review and approve or decline below:"
     )
 
-    # Colourful buttons — 🟢 green for Accept, 🔴 red for Reject
-    accept_btn_text = f'<emoji id="{ACCEPT_EMOJI_ID}">🟢</emoji> ✅ Accept'
-    decline_btn_text = f'<emoji id="{DECLINE_EMOJI_ID}">🔴</emoji> ❌ Reject'
+    # Colourful buttons via pyrogram enums — SUCCESS (green) for Accept, DANGER (red) for Reject
+    accept_btn_text = "#g \u2705 Accept"
+    decline_btn_text = "#r \u274c Reject"
 
     buttons = types.InlineKeyboardMarkup(
         [
@@ -58,10 +56,12 @@ async def on_join_request(client, request: types.ChatJoinRequest):
                 types.InlineKeyboardButton(
                     text=accept_btn_text,
                     callback_data=f"join_req:accept:{user.id}:{chat.id}",
+                    style=enums.ButtonStyle.SUCCESS,
                 ),
                 types.InlineKeyboardButton(
                     text=decline_btn_text,
                     callback_data=f"join_req:decline:{user.id}:{chat.id}",
+                    style=enums.ButtonStyle.DANGER,
                 ),
             ]
         ]
