@@ -69,6 +69,7 @@ class HybridCacheManager:
         Returns the absolute local SSD file path or None on failure.
         """
         local_path = self._get_local_path(video_id, is_video)
+        warm_restore_failed = False  # set True if Telegram dump restore fails → skip re-check
 
         # ── Step 1: Query MongoDB Metadata ──
         doc = await db.get_music_cache(video_id, is_video)
@@ -98,23 +99,33 @@ class HybridCacheManager:
                 asyncio.create_task(self.enforce_lru_eviction())
                 return local_path
             else:
-                logger.error("Failed to restore %s from Telegram dump channel!", video_id)
+                # Warm restore failed (expired file_reference or deleted message).
+                # Flag this so Step 2 skips the redundant MongoDB re-check (which
+                # would just call _restore_from_telegram again and fail again).
+                logger.warning(
+                    "Warm cache restore failed for %s — falling back to cold download.",
+                    video_id,
+                )
+                warm_restore_failed = True
 
         # ── Step 2: Document does not exist in MongoDB (Cold Cache) ──
         # Single-flight lock prevents duplicate YouTube downloads across concurrent tasks
         lock = get_video_lock(video_id)
         async with lock:
             try:
-                # Re-check MongoDB in case another concurrent task just finished downloading it
-                doc_recheck = await db.get_music_cache(video_id, is_video)
-                if doc_recheck:
-                    if self.is_local_cached(video_id, is_video):
-                        asyncio.create_task(db.update_music_stats(video_id, is_video))
-                        return local_path
-                    restored = await self._restore_from_telegram(doc_recheck, local_path)
-                    if restored:
-                        asyncio.create_task(db.update_music_stats(video_id, is_video))
-                        return local_path
+                # Re-check MongoDB only if we haven't already tried warm restore above.
+                # If warm_restore_failed is True, the document exists but Telegram
+                # restore is broken — skip straight to cold download.
+                if not warm_restore_failed:
+                    doc_recheck = await db.get_music_cache(video_id, is_video)
+                    if doc_recheck:
+                        if self.is_local_cached(video_id, is_video):
+                            asyncio.create_task(db.update_music_stats(video_id, is_video))
+                            return local_path
+                        restored = await self._restore_from_telegram(doc_recheck, local_path)
+                        if restored:
+                            asyncio.create_task(db.update_music_stats(video_id, is_video))
+                            return local_path
 
                 if not downloader_fn:
                     logger.error("No downloader function provided for cold cache download of %s", video_id)
@@ -164,6 +175,8 @@ class HybridCacheManager:
         file_reference that always works, and we persist that refreshed file_id
         back to MongoDB as a best-effort fast path for next time.
         """
+        import pyrogram.errors as _pg_errors
+
         file_id = doc.get("file_id")
         channel_id = doc.get("channel_id") or getattr(config, "STORAGE_GROUP_ID", 0)
         message_id = doc.get("message_id")
@@ -181,20 +194,26 @@ class HybridCacheManager:
                 except Exception as e:
                     logger.warning("Failed to persist refreshed file_id for %s: %s", doc.get("_id"), e)
 
-        # Attempt 1 (primary): fetch the message -> fresh file_reference -> download.
-        # Immune to cross-bot file_id expiry because get_messages re-resolves it.
-        if channel_id and message_id:
+        async def _try_download_via_message(ch_id, msg_id, label: str) -> bool:
+            """Fetch message → download media. Returns True on success."""
             try:
-                logger.info("Restoring media via message_id (%s:%s)", channel_id, message_id)
-                msg = await app.get_messages(channel_id, message_id)
+                msg = await app.get_messages(ch_id, msg_id)
                 if msg and (msg.audio or msg.video or msg.document):
                     path = await app.download_media(msg, file_name=target_path)
                     if path and os.path.exists(path) and os.path.getsize(path) > 0:
                         await _persist_fresh_id(msg)
-                        logger.info("Successfully restored %s via message_id.", doc.get("_id"))
+                        logger.info("Successfully restored %s via %s.", doc.get("_id"), label)
                         return True
             except Exception as e:
-                logger.warning("Telegram message_id restoration failed: %s", e)
+                logger.warning("Telegram %s restoration failed for %s: %s", label, doc.get("_id"), e)
+            return False
+
+        # Attempt 1 (primary): fetch the message -> fresh file_reference -> download.
+        # Immune to cross-bot file_id expiry because get_messages re-resolves it.
+        if channel_id and message_id:
+            logger.info("Restoring media via message_id (%s:%s)", channel_id, message_id)
+            if await _try_download_via_message(channel_id, message_id, "message_id"):
+                return True
 
         # Attempt 2 (fallback): the previously-cached file_id. Often stale across
         # bots (the embedded file_reference expires), but cheap and works for the
@@ -206,33 +225,21 @@ class HybridCacheManager:
                 if path and os.path.exists(path) and os.path.getsize(path) > 0:
                     logger.info("Successfully restored %s via file_id.", doc.get("_id"))
                     return True
-            except Exception as e:
-                logger.warning("Telegram file_id restoration failed: %s", e)
-                # Self-heal: the file_reference embedded in the stored file_id has
-                # expired (FILE_REFERENCE_X_EXPIRED). Re-fetch the message to get a
-                # fresh reference and retry. This is what makes cross-bot restore
-                # reliable when all 8 bots share one dump channel + MongoDB.
+            except _pg_errors.FileReferenceExpired:
+                # Expected for cross-bot file_ids. Silently attempt message refresh.
+                logger.info(
+                    "file_id reference expired for %s — refreshing via message (%s:%s)",
+                    doc.get("_id"), channel_id, message_id,
+                )
                 if channel_id and message_id:
-                    try:
-                        logger.info(
-                            "file_id expired \u2014 refreshing via message (%s:%s)",
-                            channel_id, message_id,
-                        )
-                        msg = await app.get_messages(channel_id, message_id)
-                        if msg and (msg.audio or msg.video or msg.document):
-                            path = await app.download_media(msg, file_name=target_path)
-                            if path and os.path.exists(path) and os.path.getsize(path) > 0:
-                                await _persist_fresh_id(msg)
-                                logger.info(
-                                    "Successfully restored %s after file_reference refresh.",
-                                    doc.get("_id"),
-                                )
-                                return True
-                    except Exception as e2:
-                        logger.warning(
-                            "file_reference refresh also failed for %s: %s",
-                            doc.get("_id"), e2,
-                        )
+                    if await _try_download_via_message(channel_id, message_id, "message_id (after file_ref refresh)"):
+                        return True
+            except Exception as e:
+                logger.warning("Telegram file_id restoration failed for %s: %s", doc.get("_id"), e)
+                # Self-heal: re-fetch the message for a fresh file_reference.
+                if channel_id and message_id:
+                    if await _try_download_via_message(channel_id, message_id, "message_id (fallback refresh)"):
+                        return True
 
         return False
 

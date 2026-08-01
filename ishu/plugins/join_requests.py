@@ -3,6 +3,7 @@
 # Join Request Handler with Colourful Accept/Reject Buttons & PM Notifications
 
 import asyncio
+import pyrogram.errors as pg_errors
 from pyrogram import enums, filters, types
 from ishu import app, config, db, logger
 
@@ -154,6 +155,24 @@ async def handle_join_request_callback(client, callback: types.CallbackQuery):
                 )
             except Exception as pm_err:
                 logger.warning("Failed to send approval PM to %s: %s", target_user_id, pm_err)
+
+        except pg_errors.UserAlreadyParticipant:
+            # User already joined (e.g. via invite link) — treat as success, not an error.
+            logger.info(
+                "Join request for %s in %s: user already a participant (auto-resolved).",
+                target_user_id, chat_id,
+            )
+            await callback.answer("✅ User is already in the group!")
+            accepted_msg = (
+                f'<emoji id="{ACCEPT_EMOJI_ID}">🟢</emoji> <b>Already a Member</b>\n\n'
+                f"👤 <b>User:</b> {target_user_mention}\n"
+                f"💬 <b>Group:</b> <b>{chat_title}</b>\n"
+                f"ℹ️ User had already joined the group."
+            )
+            try:
+                await callback.message.edit_text(accepted_msg, parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
 
         except Exception as e:
             logger.error("Failed to approve join request for %s in %s: %s", target_user_id, chat_id, e)
