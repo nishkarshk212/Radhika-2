@@ -39,8 +39,7 @@ def _cleanup_file(media) -> None:
 def _bg_download(media) -> None:
     """
     Kick off a background download for a track.
-    Only starts if neither stream_url nor file_path is already set.
-    This ensures the file is ready if the stream URL expires mid-play.
+    Only starts if file_path is not already set.
     """
     if isinstance(media, Track) and not media.file_path:
         async def _task():
@@ -195,7 +194,7 @@ class TgCall(PyTgCalls):
         # downloaded the local copy becomes the source of truth — this stops
         # the call from dropping (and the assistant from leaving the GC) when an
         # old URL silently dies mid-play.
-        media_path = media.file_path or media.stream_url
+        media_path = media.file_path
         used_stream = bool(media.stream_url) and not media.file_path
 
         if not media_path and isinstance(media, Track):
@@ -238,7 +237,7 @@ class TgCall(PyTgCalls):
                     _bg_download(media)
 
             except Exception as e:
-                logger.warning("Stream URL failed: %s. Falling back to download.", e)
+                logger.warning("Playback failed for %s: %s. Falling back to download.", getattr(media, "id", "?"), e)
                 stream_success = False
 
         # ── Step 3: Fallback — download then play ─────────────────────────────
@@ -540,7 +539,7 @@ class TgCall(PyTgCalls):
         pre_track = getattr(last, "_prefetch_autoplay", None) if last else None
         selected_track = None
         if pre_track:
-            if pre_track.file_path or getattr(pre_track, "stream_url", None):
+            if pre_track.file_path:
                 selected_track = pre_track
                 logger.info("Zero-Gap Autoplay HIT! Instant transition for chat %s -> %s", chat_id, selected_track.id)
 

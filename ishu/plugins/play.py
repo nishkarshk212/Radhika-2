@@ -17,23 +17,8 @@ _background_tasks: set[str] = set()
 
 
 async def _background_download_task(track) -> None:
-    """
-    Background task for a queued track:
-      1. Get stream URL immediately (fast — so it can play without delay).
-      2. Then download the actual file in the background
-         (so cleanup works after playback and streaming doesn't expire).
-    """
+    """Download the actual file (Railway YT API -> yt-dlp fallback) so it's ready."""
     try:
-        # Step 1: Get stream URL for immediate playback when turn comes
-        if not track.stream_url and not track.file_path:
-            stream_url = await yt.get_stream_url(track.id, video=track.video)
-            if stream_url:
-                track.stream_url = stream_url
-                logger.info("Background: stream URL ready for %s", track.id)
-
-        # Step 2: Download the actual file in the background
-        # Even if stream URL was obtained, download so we have a local copy
-        # (stream URLs from yt-dlp expire after ~6h; file is always reliable)
         if not track.file_path:
             path = await yt.download(track.id, video=track.video)
             if path:
@@ -188,12 +173,8 @@ async def play_hndlr(
         fname = f"downloads/{file.id}.{'mp4' if video else 'mp3'}"
         if Path(fname).exists():
             file.file_path = fname
-        elif not file.stream_url:
-            file.stream_url = await yt.get_stream_url(file.id, video=video)
-            if not file.stream_url:
-                file.file_path = await yt.download(file.id, video=video)
-        # If only a (possibly stale) stream_url is present, play_media() will
-        # download + play the local file if that URL has expired.
+        else:
+            file.file_path = await yt.download(file.id, video=video)
 
     # Start playback (background download is triggered inside play_media)
     await anon.play_media(chat_id=m.chat.id, message=sent, media=file)

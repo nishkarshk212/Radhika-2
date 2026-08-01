@@ -864,18 +864,6 @@ class YouTube:
             logger.warning("search_similar_candidates error for '%s': %s", query, e)
             return []
 
-    async def get_stream_url(
-        self,
-        video_id: str,
-        video: bool = False,
-        force_cookies: bool = False,
-    ) -> str | None:
-        """
-        Get a direct stream URL for instant playback (no download).
-        Disabled: always returns None to force local download.
-        """
-        return None
-
     async def _store_in_dump(self, file_path: str, video_id: str, is_video: bool = False) -> None:
         """Upload downloaded track to STORAGE_GROUP_ID and save file_id + shared msg_id in MongoDB."""
         try:
@@ -898,8 +886,6 @@ class YouTube:
                 logger.info("Stored %s in dump channel (%s) -> msg_id: %s", video_id, storage_id, msg.id)
         except Exception as e:
             logger.warning("Failed to store %s in dump channel: %s", video_id, e)
-
-
 
 
     async def _raw_cold_download(self, video_id: str, video: bool = False) -> str | None:
@@ -948,6 +934,25 @@ class YouTube:
             video_id=video_id,
             title=title or "",
             duration=0,
+            is_video=video,
+            downloader_fn=_dl_wrapper,
+        )
+
+    async def prefetch_song(
+        self,
+        video_id: str,
+        title: str | None = None,
+        video: bool = False,
+    ) -> None:
+        """Background prefetch for upcoming songs in queue."""
+        from ishu.core.cache_manager import cache_manager
+
+        async def _dl_wrapper(vid: str, is_vid: bool):
+            return await self._raw_cold_download(vid, is_vid)
+
+        await cache_manager.prefetch_song(
+            video_id=video_id,
+            title=title or "",
             is_video=video,
             downloader_fn=_dl_wrapper,
         )
