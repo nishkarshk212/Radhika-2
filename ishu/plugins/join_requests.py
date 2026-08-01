@@ -33,6 +33,10 @@ async def on_join_request(client, request: types.ChatJoinRequest):
     )
     try:
         await client.send_message(user.id, pm_text, parse_mode=enums.ParseMode.HTML)
+        # Register the user so future /broadcast -user messages reach them.
+        # (The bot can only PM users who have started it OR a bot-initiated PM
+        # like this one — both count, so we record the id now.)
+        await db.add_user(user.id)
     except Exception as e:
         logger.warning("Could not send join request PM to user %s: %s", user.id, e)
 
@@ -240,5 +244,7 @@ async def on_user_joined_group(client, update: types.ChatMemberUpdated):
                 selective=True,
             ),
         )
+        # Register this user so /broadcast -user reaches them in the future.
+        await db.add_user(user_obj.id)
     except Exception as e:
         logger.debug("Could not send welcome PM to %s: %s", user_obj.id, e)
