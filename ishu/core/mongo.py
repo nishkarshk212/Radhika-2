@@ -175,10 +175,32 @@ class MongoDB:
         """Get full metadata document for a song from shared MongoDB."""
         try:
             key = f"{video_id}_v" if is_video else f"{video_id}_a"
-            return await self.music_cachedb.find_one({"_id": key})
+            doc = await self.music_cachedb.find_one({"_id": key})
+            if doc:
+                return doc
+
+            # Fallback check on shared_song_cache (2,400+ historical dumped songs)
+            shared_doc = await self.storage_db.shared_song_cache.find_one({"_id": key})
+            if shared_doc and (shared_doc.get("msg_id") or shared_doc.get("message_id")):
+                msg_id = shared_doc.get("msg_id") or shared_doc.get("message_id")
+                ch_id = shared_doc.get("channel_id") or getattr(config, "STORAGE_GROUP_ID", -1003913556820)
+                return {
+                    "_id": key,
+                    "video_id": video_id,
+                    "title": shared_doc.get("title") or video_id,
+                    "duration": 0,
+                    "file_path": f"cache/{video_id}.{'mp4' if is_video else 'mp3'}",
+                    "file_size": 0,
+                    "file_id": "",  # Force message_id restore path (100% reliable)
+                    "file_unique_id": "",
+                    "message_id": msg_id,
+                    "channel_id": ch_id,
+                    "added_by": 0,
+                    "is_video": is_video,
+                }
         except Exception as e:
             logger.warning("get_music_cache failed for %s: %s", video_id, e)
-            return None
+        return None
 
     async def save_music_cache(
         self,
@@ -220,6 +242,9 @@ class MongoDB:
                 {"$set": doc},
                 upsert=True,
             )
+            # Dual-write to shared_song_cache for legacy compatibility
+            if message_id:
+                asyncio.create_task(self.save_shared_song(video_id, message_id, is_video, title))
         except Exception as e:
             logger.error("save_music_cache failed for %s: %s", video_id, e)
 
