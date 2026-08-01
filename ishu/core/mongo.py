@@ -34,6 +34,7 @@ class MongoDB:
         self.loop = {}
         self.notified = []
         self.autoplay = []
+        self.joinreq_enabled = []  # chats where join-request handler is ON
         self.cache = self.db.cache
         # Default: logger is ON whenever LOGGER_ID is configured. The value is
         # overwritten by get_logger() at boot if a persisted setting exists.
@@ -465,6 +466,29 @@ class MongoDB:
             upsert=True,
         )
 
+
+    # JOIN REQUEST METHODS
+    async def get_joinreq(self, chat_id: int) -> bool:
+        """Return True if join-request handling is enabled for chat_id."""
+        if chat_id not in self.joinreq_enabled:
+            doc = await self.chatsdb.find_one({"_id": chat_id})
+            if doc and doc.get("joinreq_enabled"):
+                self.joinreq_enabled.append(chat_id)
+        return chat_id in self.joinreq_enabled
+
+    async def set_joinreq(self, chat_id: int, enable: bool = True) -> None:
+        """Enable or disable join-request handling for chat_id."""
+        if enable:
+            if chat_id not in self.joinreq_enabled:
+                self.joinreq_enabled.append(chat_id)
+        else:
+            if chat_id in self.joinreq_enabled:
+                self.joinreq_enabled.remove(chat_id)
+        await self.chatsdb.update_one(
+            {"_id": chat_id},
+            {"$set": {"joinreq_enabled": enable}},
+            upsert=True,
+        )
 
     # SUDO METHODS
     async def add_sudo(self, user_id: int) -> None:
