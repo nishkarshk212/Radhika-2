@@ -251,6 +251,38 @@ class MongoDB:
         except Exception as e:
             logger.warning("update_music_file_id failed for %s: %s", video_id, e)
 
+    async def update_music_message_id(
+        self, video_id: str, message_id: int, channel_id: int,
+        file_id: str = "", file_unique_id: str = "", is_video: bool = False
+    ) -> None:
+        """Update message_id, channel_id (and optionally file_id) after a successful
+        Telegram-message-based restoration. Ensures future lookups use the correct
+        message reference even if the original message was deleted or migrated."""
+        try:
+            key = f"{video_id}_v" if is_video else f"{video_id}_a"
+            update_data: dict = {
+                "message_id": message_id,
+                "channel_id": channel_id,
+            }
+            if file_id:
+                update_data["file_id"] = file_id
+            if file_unique_id:
+                update_data["file_unique_id"] = file_unique_id
+            await self.music_cachedb.update_one({"_id": key}, {"$set": update_data})
+        except Exception as e:
+            logger.warning("update_music_message_id failed for %s: %s", video_id, e)
+
+    async def delete_music_cache(self, video_id: str, is_video: bool = False) -> None:
+        """Delete a music cache document from SharedStorage MongoDB.
+        Called when BOTH file_id and message_id restoration fail completely,
+        so the next request triggers a clean cold download + re-upload."""
+        try:
+            key = f"{video_id}_v" if is_video else f"{video_id}_a"
+            await self.music_cachedb.delete_one({"_id": key})
+            logger.info("Invalidated stale MongoDB cache record for %s", video_id)
+        except Exception as e:
+            logger.warning("delete_music_cache failed for %s: %s", video_id, e)
+
     # TELEGRAM STORAGE CHANNEL FILE_ID CACHE
     async def get_song_file_id(self, video_id: str, is_video: bool = False) -> str | None:
         """Get Telegram file_id for a cached song from MongoDB."""
