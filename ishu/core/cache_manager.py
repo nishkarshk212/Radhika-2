@@ -244,6 +244,8 @@ class HybridCacheManager:
                         asyncio.create_task(_persist(label, msg))
                         logger.info("Restored %s via %s.", video_id, label)
                         return True
+            except (_pg_errors.ChannelInvalid, _pg_errors.ChannelPrivate):
+                logger.info("[%s] Client not in dump channel (%s) — skipping.", label, ch_id)
             except Exception as e:
                 logger.warning("[%s] message restore failed for %s: %s", label, video_id, e)
             return False
