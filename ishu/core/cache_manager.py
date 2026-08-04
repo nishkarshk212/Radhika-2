@@ -235,7 +235,12 @@ class HybridCacheManager:
                     logger.warning("Failed to persist refreshed file_id for %s: %s", video_id, pe)
 
         async def _download_via_message(client, ch_id: int, msg_id: int, label: str) -> bool:
-            """Fetch message → download media → return True on success."""
+            """Fetch message → download media → return True on success.
+
+            Includes a stale file_reference self-heal: if download_media returns
+            None (stale reference that didn't raise FileReferenceExpired), re-fetch
+            the message once to force Telegram to refresh the reference, then retry.
+            """
             try:
                 msg = await client.get_messages(ch_id, msg_id)
                 if msg and not getattr(msg, "empty", True) and (msg.audio or msg.video or msg.document):
@@ -244,6 +249,22 @@ class HybridCacheManager:
                         asyncio.create_task(_persist(label, msg))
                         logger.info("Restored %s via %s.", video_id, label)
                         return True
+                    # download_media returned None — stale file_reference.
+                    # Re-fetch the message to force Telegram to refresh it, then retry.
+                    logger.info(
+                        "[%s] download_media returned None for %s (stale ref). "
+                        "Re-fetching message to refresh...", label, video_id,
+                    )
+                    msg = await client.get_messages(ch_id, msg_id)
+                    if msg and not getattr(msg, "empty", True) and (msg.audio or msg.video or msg.document):
+                        path = await client.download_media(msg, file_name=target_path)
+                        if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                            asyncio.create_task(_persist(label, msg))
+                            logger.info("Restored %s via %s (after ref refresh).", video_id, label)
+                            return True
+                    logger.warning(
+                        "[%s] Still failed after ref refresh for %s.", label, video_id,
+                    )
             except (_pg_errors.ChannelInvalid, _pg_errors.ChannelPrivate):
                 logger.info("[%s] Client not in dump channel (%s) — skipping.", label, ch_id)
             except Exception as e:
@@ -251,12 +272,20 @@ class HybridCacheManager:
             return False
 
         async def _download_via_file_id(client, fid: str, label: str) -> bool:
-            """Download directly by file_id → return True on success."""
+            """Download directly by file_id → return True on success.
+
+            If download_media returns None (stale ref), try refreshing via
+            message_id if available, so we get a fresh file_reference.
+            """
             try:
                 path = await client.download_media(fid, file_name=target_path)
                 if path and os.path.exists(path) and os.path.getsize(path) > 0:
                     logger.info("Restored %s via %s (file_id).", video_id, label)
                     return True
+                # file_id returned None — stale reference without exception.
+                logger.info(
+                    "[%s] file_id download returned None for %s (stale ref).", label, video_id,
+                )
             except _pg_errors.FileReferenceExpired:
                 logger.info(
                     "[%s] file_id reference expired for %s — will try message_id next.",
