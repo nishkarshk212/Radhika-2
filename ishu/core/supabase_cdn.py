@@ -1,8 +1,8 @@
-# Supabase 5-Node Load-Balanced CDN Uploader
+# Supabase 5-Node Deterministic Hashed CDN Uploader
 import asyncio
+import hashlib
 import logging
 import os
-import random
 import urllib.request
 from typing import Optional
 
@@ -31,6 +31,10 @@ SUPABASE_NODES = [
     },
 ]
 
+def get_node_for_video(video_id: str) -> dict:
+    idx = int(hashlib.md5(video_id.encode("utf-8")).hexdigest(), 16) % len(SUPABASE_NODES)
+    return SUPABASE_NODES[idx]
+
 def _upload_sync(file_path: str, video_id: str, is_video: bool = False) -> Optional[str]:
     if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
         return None
@@ -39,9 +43,6 @@ def _upload_sync(file_path: str, video_id: str, is_video: bool = False) -> Optio
     content_type = "video/mp4" if is_video else "audio/mpeg"
     object_path = f"{video_id}.{ext}"
 
-    nodes = list(SUPABASE_NODES)
-    random.shuffle(nodes)
-
     try:
         with open(file_path, "rb") as f:
             file_bytes = f.read()
@@ -49,30 +50,31 @@ def _upload_sync(file_path: str, video_id: str, is_video: bool = False) -> Optio
         logger.error("Failed to read %s for Supabase upload: %s", file_path, e)
         return None
 
-    for node in nodes:
-        url = node["url"]
-        key = node["key"]
-        upload_url = f"{url}/storage/v1/object/songs/{object_path}"
-        req = urllib.request.Request(
-            upload_url,
-            data=file_bytes,
-            headers={
-                "apikey": key,
-                "Authorization": f"Bearer {key}",
-                "Content-Type": content_type,
-                "x-upsert": "true"
-            },
-            method="POST"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                if resp.status in (200, 201):
-                    cdn_link = f"{url}/storage/v1/object/public/songs/{object_path}"
-                    logger.info("Supabase CDN upload SUCCESS for %s → %s", video_id, cdn_link)
-                    return cdn_link
-        except Exception as e:
-            logger.warning("Supabase upload node %s failed for %s: %s", url, video_id, e)
-            continue
+    # Deterministic Node selection via MD5 Hash (Guarantees Zero Duplicates)
+    node = get_node_for_video(video_id)
+    url = node["url"]
+    key = node["key"]
+    upload_url = f"{url}/storage/v1/object/songs/{object_path}"
+
+    req = urllib.request.Request(
+        upload_url,
+        data=file_bytes,
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": content_type,
+            "x-upsert": "true"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if resp.status in (200, 201):
+                cdn_link = f"{url}/storage/v1/object/public/songs/{object_path}"
+                logger.info("Supabase CDN upload SUCCESS for %s → %s", video_id, cdn_link)
+                return cdn_link
+    except Exception as e:
+        logger.warning("Supabase upload failed on node %s for %s: %s", url, video_id, e)
 
     return None
 
