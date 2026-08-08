@@ -170,6 +170,13 @@ class HybridCacheManager:
                 # Upload MP3/MP4 to Telegram Dump Channel as permanent backup
                 dump_meta = await self._upload_to_telegram_dump(dl_result, video_id, title, is_video)
 
+                # Background upload to 5-Node Supabase CDN Cluster
+                try:
+                    from ishu.core.supabase_cdn import upload_to_supabase
+                    asyncio.create_task(upload_to_supabase(dl_result, video_id, is_video))
+                except Exception as e:
+                    logger.warning("Supabase background task error: %s", e)
+
                 # Persist metadata to MongoDB (single source of truth)
                 channel_id = getattr(config, "STORAGE_GROUP_ID", 0) or getattr(config, "LOGGER_ID", 0)
                 await db.save_music_cache(
