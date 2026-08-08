@@ -1,4 +1,4 @@
-# Supabase 5-Node Deterministic Hashed CDN Uploader
+# Supabase 8-Node Deterministic Hashed CDN Uploader
 import asyncio
 import hashlib
 import logging
@@ -29,6 +29,18 @@ SUPABASE_NODES = [
         "url": "https://osalzusukowsoicsxikq.supabase.co",
         "key": "sb_publishable_VCIZj0YfM512BR2tlqZzAw_kqnDHxZN",
     },
+    {
+        "url": "https://updmgiihcmfxldicitml.supabase.co",
+        "key": "sb_publishable_ruWFuzR94d9nY2NyRWoOhg_VYC6jRHp",
+    },
+    {
+        "url": "https://jnhiyuxrfavutqjgbgmo.supabase.co",
+        "key": "sb_publishable_CjKu2ks-QsvFn7sYsNM1nA_BH85Z00O",
+    },
+    {
+        "url": "https://osrkveuangnuiywqnzna.supabase.co",
+        "key": "sb_publishable_hwmoMCZLT9We73JAG7GC1A_vTq1n77r",
+    },
 ]
 
 def get_node_for_video(video_id: str) -> dict:
@@ -50,7 +62,6 @@ def _upload_sync(file_path: str, video_id: str, is_video: bool = False) -> Optio
         logger.error("Failed to read %s for Supabase upload: %s", file_path, e)
         return None
 
-    # Deterministic Node selection via MD5 Hash (Guarantees Zero Duplicates)
     node = get_node_for_video(video_id)
     url = node["url"]
     key = node["key"]
