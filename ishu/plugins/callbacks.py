@@ -8,7 +8,7 @@ import re
 from pyrogram import enums, errors, filters, types
 
 from ishu import anon, app, config, db, lang, queue, tg, userbot, yt
-from ishu.helpers import admin_check, buttons, can_manage_vc
+from ishu.helpers import admin_check, buttons, can_manage_vc, can_skip
 from ishu.plugins import all_modules
 
 
@@ -21,7 +21,6 @@ async def cancel_dl(_, query: types.CallbackQuery):
 
 @app.on_callback_query(filters.regex("controls") & ~app.bl_users)
 @lang.language()
-@can_manage_vc
 async def _controls(_, query: types.CallbackQuery):
     args = query.data.split()
     action, chat_id = args[1], int(args[2])

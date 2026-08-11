@@ -483,6 +483,32 @@ class MongoDB:
             upsert=True,
         )
 
+    
+    # SKIP MODE METHODS
+    async def get_skip_mode(self, chat_id: int) -> bool:
+        if not hasattr(self, "admin_skip"):
+            self.admin_skip = []
+        if chat_id not in self.admin_skip:
+            doc = await self.chatsdb.find_one({"_id": chat_id})
+            if doc and doc.get("admin_skip"):
+                self.admin_skip.append(chat_id)
+        return chat_id in self.admin_skip
+
+    async def set_skip_mode(self, chat_id: int, admin_only: bool = False) -> None:
+        if not hasattr(self, "admin_skip"):
+            self.admin_skip = []
+        if admin_only:
+            if chat_id not in self.admin_skip:
+                self.admin_skip.append(chat_id)
+        else:
+            if chat_id in self.admin_skip:
+                self.admin_skip.remove(chat_id)
+        await self.chatsdb.update_one(
+            {"_id": chat_id},
+            {"$set": {"admin_skip": admin_only}},
+            upsert=True,
+        )
+
     # AUTOPLAY METHODS
     async def get_autoplay(self, chat_id: int) -> bool:
         if chat_id not in self.autoplay:

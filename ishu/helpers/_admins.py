@@ -94,3 +94,14 @@ async def reload_admins(chat_id: int) -> list[int]:
         return [admin.user.id for admin in admins]
     except Exception:
         return []
+
+
+async def can_skip(chat_id: int, user_id: int) -> bool:
+    if user_id in app.sudoers:
+        return True
+    if not await db.get_skip_mode(chat_id):
+        return True
+    if await db.is_auth(chat_id, user_id):
+        return True
+    admins = await db.get_admins(chat_id)
+    return user_id in admins
