@@ -12,6 +12,14 @@ import pyrogram.errors as _pg_errors
 
 from ishu import config, logger, app, db, userbot
 
+try:
+    from ishu.core.supabase_cdn import restore_from_supabase, upload_to_supabase
+except Exception:
+    async def restore_from_supabase(video_id: str, target_path: str, is_video: bool = False) -> bool:
+        return False
+    async def upload_to_supabase(file_path: str, video_id: str, is_video: bool = False):
+        return None
+
 # ── Silence pyrogram.client FileReferenceExpired noise ────────────────────────
 # pyrogram logs this at ERROR level internally before our except block catches
 # it. Filtering it here keeps logs clean without losing real errors.
@@ -116,7 +124,6 @@ class HybridCacheManager:
             # WARM CACHE — restore from Supabase CDN FIRST (1-2s HTTP GET), then Telegram dump
             logger.info("[WARM CACHE RESTORE] Local SSD missing for %s. Restoring via Supabase CDN...", video_id)
             try:
-                from ishu.core.supabase_cdn import restore_from_supabase
                 if await restore_from_supabase(video_id, local_path, is_video):
                     logger.info("[SUPABASE CDN RESTORE HIT] %s restored in <2s!", video_id)
                     asyncio.create_task(db.update_music_stats(video_id, is_video))
@@ -132,7 +139,7 @@ class HybridCacheManager:
                 asyncio.create_task(db.update_music_stats(video_id, is_video))
                 asyncio.create_task(self.enforce_lru_eviction())
                 return local_path
-
+            else:
                 # Both Telegram dump and Supabase CDN failed — self-heal MongoDB
                 logger.warning(
                     "[WARM CACHE FAIL] All restore attempts (Telegram + Supabase CDN) exhausted for %s. "
@@ -144,7 +151,6 @@ class HybridCacheManager:
 
         # ── Step 2: Check Supabase CDN Cluster if unindexed ──────────────────
         try:
-            from ishu.core.supabase_cdn import restore_from_supabase
             if await restore_from_supabase(video_id, local_path, is_video):
                 asyncio.create_task(db.update_music_stats(video_id, is_video))
                 asyncio.create_task(self.enforce_lru_eviction())
@@ -168,9 +174,12 @@ class HybridCacheManager:
                         if restored:
                             asyncio.create_task(db.update_music_stats(video_id, is_video))
                             return local_path
-                        if await restore_from_supabase(video_id, local_path, is_video):
-                            asyncio.create_task(db.update_music_stats(video_id, is_video))
-                            return local_path
+                        try:
+                            if await restore_from_supabase(video_id, local_path, is_video):
+                                asyncio.create_task(db.update_music_stats(video_id, is_video))
+                                return local_path
+                        except Exception:
+                            pass
                         # Same self-heal for the inner re-check path
                         asyncio.create_task(db.delete_music_cache(video_id, is_video))
 
@@ -191,9 +200,8 @@ class HybridCacheManager:
                 # Upload MP3/MP4 to Telegram Dump Channel as permanent backup
                 dump_meta = await self._upload_to_telegram_dump(dl_result, video_id, title, is_video)
 
-                # Background upload to 5-Node Supabase CDN Cluster
+                # Background upload to 10-Node Supabase CDN Cluster
                 try:
-                    from ishu.core.supabase_cdn import upload_to_supabase
                     asyncio.create_task(upload_to_supabase(dl_result, video_id, is_video))
                 except Exception as e:
                     logger.warning("Supabase background task error: %s", e)
