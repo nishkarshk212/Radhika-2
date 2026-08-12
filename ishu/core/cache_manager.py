@@ -113,28 +113,46 @@ class HybridCacheManager:
                 asyncio.create_task(db.update_music_stats(video_id, is_video))
                 return local_path
 
-            # WARM CACHE — restore from Telegram dump channel
-            logger.info(
-                "[WARM CACHE RESTORE] Local SSD missing for %s. Restoring from Telegram dump...",
-                video_id,
-            )
+            # WARM CACHE — restore from Supabase CDN FIRST (1-2s HTTP GET), then Telegram dump
+            logger.info("[WARM CACHE RESTORE] Local SSD missing for %s. Restoring via Supabase CDN...", video_id)
+            try:
+                from ishu.core.supabase_cdn import restore_from_supabase
+                if await restore_from_supabase(video_id, local_path, is_video):
+                    logger.info("[SUPABASE CDN RESTORE HIT] %s restored in <2s!", video_id)
+                    asyncio.create_task(db.update_music_stats(video_id, is_video))
+                    asyncio.create_task(self.enforce_lru_eviction())
+                    return local_path
+            except Exception as se:
+                logger.warning("Supabase CDN restore error: %s", se)
+
+            # Fallback: Restore from Telegram dump channel if Supabase misses
+            logger.info("[TELEGRAM RESTORE FALLBACK] Restoring %s from Telegram dump...", video_id)
             restored = await self._restore_from_telegram(doc, local_path)
             if restored:
                 asyncio.create_task(db.update_music_stats(video_id, is_video))
                 asyncio.create_task(self.enforce_lru_eviction())
                 return local_path
-            else:
-                # Both file_id and message_id failed — self-heal by deleting
-                # the stale document so Step 2 does a clean cold download.
+
+                # Both Telegram dump and Supabase CDN failed — self-heal MongoDB
                 logger.warning(
-                    "[WARM CACHE FAIL] All restore attempts exhausted for %s. "
+                    "[WARM CACHE FAIL] All restore attempts (Telegram + Supabase CDN) exhausted for %s. "
                     "Deleting stale MongoDB record → will re-download and re-upload.",
                     video_id,
                 )
                 asyncio.create_task(db.delete_music_cache(video_id, is_video))
                 warm_restore_failed = True
 
-        # ── Step 2: Cold Cache — download from YouTube ───────────────────────
+        # ── Step 2: Check Supabase CDN Cluster if unindexed ──────────────────
+        try:
+            from ishu.core.supabase_cdn import restore_from_supabase
+            if await restore_from_supabase(video_id, local_path, is_video):
+                asyncio.create_task(db.update_music_stats(video_id, is_video))
+                asyncio.create_task(self.enforce_lru_eviction())
+                return local_path
+        except Exception:
+            pass
+
+        # ── Step 3: Cold Cache — download from YouTube ───────────────────────
         lock = get_video_lock(video_id)
         async with lock:
             try:
@@ -148,6 +166,9 @@ class HybridCacheManager:
                             return local_path
                         restored = await self._restore_from_telegram(doc_recheck, local_path)
                         if restored:
+                            asyncio.create_task(db.update_music_stats(video_id, is_video))
+                            return local_path
+                        if await restore_from_supabase(video_id, local_path, is_video):
                             asyncio.create_task(db.update_music_stats(video_id, is_video))
                             return local_path
                         # Same self-heal for the inner re-check path
