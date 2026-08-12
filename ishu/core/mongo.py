@@ -1,3 +1,4 @@
+from ishu.core.redis_manager import redis_db
 # Copyright (c) 2025 AnonymousX1025
 # Licensed under the MIT License.
 # This file is part of AnonXMusic
@@ -68,6 +69,7 @@ class MongoDB:
             start = time()
             await self.mongo.admin.command("ping")
             logger.info(f"Database connection successful. ({time() - start:.2f}s)")
+            await redis_db.connect()
             await self.load_cache()
             try:
                 await self.music_cachedb.create_index("last_played")
@@ -173,7 +175,12 @@ class MongoDB:
 
     # ULTRA-FAST HYBRID MUSIC CACHE METHODS
     async def get_music_cache(self, video_id: str, is_video: bool = False) -> dict | None:
-        """Get full metadata document for a song from shared MongoDB."""
+        """Get full metadata document for a song from shared Redis/MongoDB."""
+        redis_key = f"song:{video_id}_{'v' if is_video else 'a'}"
+        redis_cached = await redis_db.get_json(redis_key)
+        if redis_cached:
+            logger.info("[REDIS RAM HIT] Ultra-fast <1ms lookup for %s", video_id)
+            return redis_cached
         try:
             key = f"{video_id}_v" if is_video else f"{video_id}_a"
             doc = await self.music_cachedb.find_one({"_id": key})
@@ -243,6 +250,7 @@ class MongoDB:
                 {"$set": doc},
                 upsert=True,
             )
+            asyncio.create_task(redis_db.set_json(f"song:{key}", doc))
             # Dual-write to shared_song_cache for legacy compatibility
             if message_id:
                 asyncio.create_task(self.save_shared_song(video_id, message_id, is_video, title))
