@@ -30,7 +30,7 @@ class Config:
         self.YT_API_KEY = getenv("YT_API_KEY", "")  # Get from https://t.me/tgmusic_apibot
 
         # Self-hosted YouTube API — Heroku apihub proxy (X-API-Key = lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he).
-        self.RAILWAY_YT_API_URL = getenv("LILY_API_URL", getenv("RAILWAY_YT_API_URL", "https://publicapi-588300c22203.herokuapp.com")))
+        self.RAILWAY_YT_API_URL = getenv("LILY_API_URL", getenv("RAILWAY_YT_API_URL", "https://publicapi-588300c22203.herokuapp.com"))
         self.RAILWAY_YT_API_KEY = getenv("LILY_API_KEY", getenv("RAILWAY_YT_API_KEY", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"))
 
         # Shruti API — Primary download source (get key from @SHRUTIAPIBOT)
