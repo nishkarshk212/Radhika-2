@@ -782,6 +782,14 @@ class MongoDB:
         except Exception as e:
             logger.warning("reset_assistant_pm_config failed: %s", e)
 
+
+    async def record_play(self, chat_id: int, video_id: str, title: str = "", user_id: int = 0, is_video: bool = False) -> None:
+        """Record play event / alias for update_music_stats."""
+        try:
+            await self.update_music_stats(video_id, is_video=is_video)
+        except Exception as e:
+            logger.warning("record_play failed for %s: %s", video_id, e)
+
     async def load_cache(self) -> None:
         doc = await self.cache.find_one({"_id": "migrated"})
         if not doc:
