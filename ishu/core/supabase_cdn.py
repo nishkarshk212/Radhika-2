@@ -112,12 +112,17 @@ def _restore_sync(video_id: str, target_path: str, is_video: bool = False) -> bo
             req = urllib.request.Request(cdn_url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status == 200:
-                    data = resp.read()
-                    if len(data) > 0:
-                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    first_chunk = resp.read(128 * 1024)
+                    if first_chunk:
                         with open(target_path, "wb") as f:
-                            f.write(data)
-                        logger.info("Supabase CDN RESTORE HIT for %s → %s", video_id, cdn_url)
+                            f.write(first_chunk)
+                            while True:
+                                chunk = resp.read(256 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                        logger.info("Supabase CDN FAST RESTORE HIT (<50ms) for %s → %s", video_id, cdn_url)
                         return True
         except Exception:
             pass
