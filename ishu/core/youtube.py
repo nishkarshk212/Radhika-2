@@ -933,6 +933,7 @@ class YouTube:
         video_id: str,
         video: bool = False,
         title: str | None = None,
+        force_cold_file: bool = False,
     ) -> str | None:
         """
         Download audio/video by video_id using ultra-fast HybridCacheManager.
@@ -948,7 +949,7 @@ class YouTube:
             return await self._raw_cold_download(vid, is_vid)
 
         # Check if already cached locally or in MongoDB
-        if not cache_manager.is_local_cached(video_id, video):
+        if not force_cold_file and not cache_manager.is_local_cached(video_id, video):
             doc = await db.get_music_cache(video_id, video)
             if not doc:
                 # Cold track: return direct API stream URL instantly (<50ms) & download in background

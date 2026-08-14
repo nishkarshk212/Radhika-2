@@ -239,7 +239,7 @@ class TgCall(PyTgCalls):
                 title=media.title,
                 video=media.video,
             )
-            media.file_path = await yt.download(media.id, video=media.video)
+            media.file_path = await yt.download(media.id, video=media.video, force_cold_file=True)
             media_path = media.file_path
 
         if not media_path:
@@ -274,69 +274,57 @@ class TgCall(PyTgCalls):
                     stream=stream,
                     config=types.GroupCallConfig(auto_start=True),
                 )
-
-            if not seek_time:
-                media.time = 1
-                await db.add_call(chat_id)
-                _remember(chat_id, getattr(media, "id", None), getattr(media, "title", None))
-
-                # Shorten title to 50 characters max
-                short_title = media.title.split("|")[0].split("(")[0].strip()
-                if len(short_title) > 50:
-                    short_title = short_title[:47].rstrip() + "…"
-
-                text = _lang["play_media"].format(
-                    media.url,
-                    short_title,
-                    media.duration,
-                    media.user,
-                )
-
-                from ishu.helpers._inline import _panel_state
-                _panel_state[chat_id] = _panel_state.get(chat_id, {})
-                _panel_state[chat_id]["playing_caption"] = text
-
-                keyboard = buttons.controls(
-                    chat_id,
-                    autoplay=await db.get_autoplay(chat_id),
-                    mode=await db.get_autoplay_mode(chat_id),
-                    link=media.url if (isinstance(media, Track) and getattr(media, "url", None)) else None,
-                )
-
-                if _thumb:
-                    await message.edit_media(
-                        media=InputMediaPhoto(
-                            media=_thumb,
-                            caption=text,
-                            has_spoiler=True,
-                        ),
-                        reply_markup=keyboard,
-                    )
-                else:
-                    await message.edit_text(
-                        text,
-                        reply_markup=keyboard,
-                    )
-
-                media.message_id = message.id
-                if await db.get_autoplay(chat_id) and not queue.get_next(chat_id, check=True):
-                    asyncio.create_task(self._prefetch_autoplay(chat_id, media))
-
-        except FileNotFoundError:
+        except Exception as e:
+            logger.error("Final playback failed for %s: %s", getattr(media, "id", "?"), e)
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-            await self.play_next(chat_id)
-        except exceptions.NoActiveGroupCall:
-            await self.stop(chat_id)
-            await message.edit_text(_lang["error_no_call"])
-        except exceptions.NoAudioSourceFound:
-            await message.edit_text(_lang["error_no_audio"])
-            await self.play_next(chat_id)
-        except (ConnectionError, ConnectionNotFound, TelegramServerError):
-            await self.stop(chat_id)
-            await message.edit_text(_lang["error_tg_server"])
-        except RTMPStreamingUnsupported:
-            await self.stop(chat_id)
-            await message.edit_text(_lang["error_rtmp"])
+            return await self.play_next(chat_id)
+
+        if not seek_time:
+            media.time = 1
+            await db.add_call(chat_id)
+            _remember(chat_id, getattr(media, "id", None), getattr(media, "title", None))
+
+            # Shorten title to 50 characters max
+            short_title = media.title.split("|")[0].split("(")[0].strip()
+            if len(short_title) > 50:
+                short_title = short_title[:47].rstrip() + "…"
+
+            text = _lang["play_media"].format(
+                media.url,
+                short_title,
+                media.duration,
+                media.user,
+            )
+
+            from ishu.helpers._inline import _panel_state
+            _panel_state[chat_id] = _panel_state.get(chat_id, {})
+            _panel_state[chat_id]["playing_caption"] = text
+
+            keyboard = buttons.controls(
+                chat_id,
+                autoplay=await db.get_autoplay(chat_id),
+                mode=await db.get_autoplay_mode(chat_id),
+                link=media.url if (isinstance(media, Track) and getattr(media, "url", None)) else None,
+            )
+
+            if _thumb:
+                await message.edit_media(
+                    media=InputMediaPhoto(
+                        media=_thumb,
+                        caption=text,
+                        has_spoiler=True,
+                    ),
+                    reply_markup=keyboard,
+                )
+            else:
+                await message.edit_text(
+                    text,
+                    reply_markup=keyboard,
+                )
+
+            media.message_id = message.id
+            if await db.get_autoplay(chat_id) and not queue.get_next(chat_id, check=True):
+                asyncio.create_task(self._prefetch_autoplay(chat_id, media))
 
 
     async def replay(self, chat_id: int) -> None:
