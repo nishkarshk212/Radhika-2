@@ -940,11 +940,35 @@ class YouTube:
         Returns file path or None.
         """
         from ishu.core.cache_manager import cache_manager
+        from ishu import db
 
         self.dl_stats["total_requests"] += 1
 
         async def _dl_wrapper(vid: str, is_vid: bool):
             return await self._raw_cold_download(vid, is_vid)
+
+        # Check if already cached locally or in MongoDB
+        if not cache_manager.is_local_cached(video_id, video):
+            doc = await db.get_music_cache(video_id, video)
+            if not doc:
+                # Cold track: return direct API stream URL instantly (<50ms) & download in background
+                endpoint = "play/video" if video else "play/audio"
+                api_url = getattr(config, "RAILWAY_YT_API_URL", None) or getattr(config, "YOUTUBE_API_URL", None)
+                api_key = getattr(config, "RAILWAY_YT_API_KEY", None) or getattr(config, "YOUTUBE_API_KEY", None)
+                if api_url and api_key:
+                    stream_url = f"{api_url}/{endpoint}?id={video_id}&api_key={api_key}"
+                    logger.info("⚡ [INSTANT COLD STREAM] Returning direct API stream for %s → %s", video_id, api_url)
+                    # Kick off background download + upload to Telegram dump channel
+                    asyncio.create_task(
+                        cache_manager.get_or_fetch(
+                            video_id=video_id,
+                            title=title or "",
+                            duration=0,
+                            is_video=video,
+                            downloader_fn=_dl_wrapper,
+                        )
+                    )
+                    return stream_url
 
         return await cache_manager.get_or_fetch(
             video_id=video_id,
