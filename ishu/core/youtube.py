@@ -338,8 +338,9 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
     cmd = [
         "yt-dlp",
         "--js-runtimes", "node",
-        "-N", "4",
-        "--buffer-size", "16k",
+        "-N", "8",
+        "--buffer-size", "1M",
+        "--http-chunk-size", "10M",
         "--no-playlist",
         "--no-warnings",
         "-q",
@@ -403,7 +404,7 @@ async def _download_with_fallback(
         if result:
             return result, "railway"
         if attempt < max_railway_attempts:
-            wait = min(2 ** attempt, 30)
+            wait = min(attempt, 3)
             logger.info(
                 "Railway YT API attempt %s/%s failed for %s. Retrying in %ss...",
                 attempt, max_railway_attempts, video_id, wait,
