@@ -18,6 +18,7 @@ class RedisManager:
             logger.info("REDIS_URL not configured. Running without Redis RAM cache.")
             return
 
+        try:
             kwargs = {
                 "socket_timeout": 5.0,
                 "socket_keepalive": True,
