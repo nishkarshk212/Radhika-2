@@ -197,10 +197,13 @@ class TgCall(PyTgCalls):
         media_path = media.file_path
 
         if not media_path and isinstance(media, Track):
-            cached_file = await yt.download(media.id, video=media.video)
-            if cached_file:
-                media.file_path = cached_file
-                media_path = cached_file
+            endpoint = "play/video" if media.video else "play/audio"
+            api_url = getattr(config, "RAILWAY_YT_API_URL", None) or getattr(config, "YOUTUBE_API_URL", None)
+            api_key = getattr(config, "RAILWAY_YT_API_KEY", None) or getattr(config, "YOUTUBE_API_KEY", None)
+            if api_url and api_key:
+                media_path = f"{api_url}/{endpoint}?id={media.id}&api_key={api_key}"
+                logger.info("⚡ [SUB-50MS FAST STREAM] Direct HTTP stream initiated for %s (%s) → %s", media.id, endpoint, api_url)
+                _bg_download(media)
         # ── Step 2: Attempt playback ──────────────────────────────────────────
         stream_success = False
         if media_path:
@@ -305,6 +308,7 @@ class TgCall(PyTgCalls):
                         media=InputMediaPhoto(
                             media=_thumb,
                             caption=text,
+                            has_spoiler=True,
                         ),
                         reply_markup=keyboard,
                     )
@@ -555,6 +559,19 @@ class TgCall(PyTgCalls):
         current_media = queue.get_current(chat_id)
         if current_media:
             _cleanup_file(current_media)
+
+            # ── AUTO-DELETE: Remove the "now playing" message after track ends ──
+            if getattr(current_media, "message_id", None):
+                try:
+                    await app.delete_messages(
+                        chat_id=chat_id,
+                        message_ids=current_media.message_id,
+                        revoke=True,
+                    )
+                    logger.info("Auto-deleted playing message %s in chat %s", current_media.message_id, chat_id)
+                except Exception:
+                    pass
+                current_media.message_id = 0
 
         # ── Advance queue ─────────────────────────────────────────────────────
         media = queue.get_next(chat_id)
