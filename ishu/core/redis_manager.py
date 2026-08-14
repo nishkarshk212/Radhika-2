@@ -18,8 +18,12 @@ class RedisManager:
             logger.info("REDIS_URL not configured. Running without Redis RAM cache.")
             return
 
-        try:
-            kwargs = {"socket_timeout": 5.0}
+            kwargs = {
+                "socket_timeout": 5.0,
+                "socket_keepalive": True,
+                "health_check_interval": 30,
+                "retry_on_timeout": True,
+            }
             if redis_url.startswith("rediss://"):
                 kwargs["ssl_cert_reqs"] = None
 
