@@ -230,7 +230,8 @@ class TgCall(PyTgCalls):
                 stream_success = True
 
             except Exception as e:
-                logger.warning("Playback failed for %s: %s. Falling back to download.", getattr(media, "id", "?"), e)
+                err_detail = str(e).strip() or "PyTgCalls HTTP probe timeout"
+                logger.info("Direct HTTP stream probe skipped for %s (%s) → Downloading file for smooth playback...", getattr(media, "id", "?"), err_detail)
                 stream_success = False
 
         # ── Step 3: Fallback — download then play ─────────────────────────────
