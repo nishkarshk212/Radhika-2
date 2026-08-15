@@ -163,27 +163,28 @@ class HybridCacheManager:
 
                 file_size = os.path.getsize(dl_result)
 
-                # Upload MP3/MP4 to Telegram Dump Channel as permanent backup
-                dump_meta = await self._upload_to_telegram_dump(dl_result, video_id, title, is_video)
+                # Persist metadata to Telegram Dump Channel + MongoDB in background task (zero playback delay)
+                async def _background_persist():
+                    try:
+                        dump_meta = await self._upload_to_telegram_dump(dl_result, video_id, title, is_video)
+                        channel_id = getattr(config, "STORAGE_GROUP_ID", 0) or getattr(config, "LOGGER_ID", 0)
+                        await db.save_music_cache(
+                            video_id=video_id,
+                            title=title or video_id,
+                            duration=duration,
+                            file_path=local_path,
+                            file_size=file_size,
+                            file_id=dump_meta.get("file_id", ""),
+                            file_unique_id=dump_meta.get("file_unique_id", ""),
+                            message_id=dump_meta.get("message_id", 0),
+                            channel_id=channel_id,
+                            added_by=added_by,
+                            is_video=is_video,
+                        )
+                    except Exception as ex:
+                        logger.warning("Background dump persist error for %s: %s", video_id, ex)
 
-                # Track saved locally and queued for Telegram Storage Channel dump
-
-                # Persist metadata to MongoDB (single source of truth)
-                channel_id = getattr(config, "STORAGE_GROUP_ID", 0) or getattr(config, "LOGGER_ID", 0)
-                await db.save_music_cache(
-                    video_id=video_id,
-                    title=title or video_id,
-                    duration=duration,
-                    file_path=local_path,
-                    file_size=file_size,
-                    file_id=dump_meta.get("file_id", ""),
-                    file_unique_id=dump_meta.get("file_unique_id", ""),
-                    message_id=dump_meta.get("message_id", 0),
-                    channel_id=channel_id,
-                    added_by=added_by,
-                    is_video=is_video,
-                )
-
+                asyncio.create_task(_background_persist())
                 asyncio.create_task(self.enforce_lru_eviction())
                 return dl_result
 
