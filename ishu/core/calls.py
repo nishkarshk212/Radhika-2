@@ -289,6 +289,12 @@ class TgCall(PyTgCalls):
                     config=types.GroupCallConfig(auto_start=True),
                 )
         except Exception as e:
+            err_str = str(e)
+            if "GROUPCALL_INVALID" in err_str or "GroupCallNotFound" in err_str:
+                logger.info("Voice chat closed/invalid in chat %s for %s", chat_id, getattr(media, "id", "?"))
+                await message.edit_text("❌ **No active Voice Chat found in this group.**\n\n`Please start a Voice Chat in group settings first!`")
+                await self.stop_stream(chat_id)
+                return
             logger.error("Final playback failed for %s: %s", getattr(media, "id", "?"), e)
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.play_next(chat_id)
