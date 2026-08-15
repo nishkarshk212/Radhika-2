@@ -208,8 +208,9 @@ class TgCall(PyTgCalls):
         stream_success = False
         if media_path:
             try:
+                real_media_path = os.path.abspath(media_path) if not media_path.startswith("http") else media_path
                 stream = types.MediaStream(
-                    media_path=media_path,
+                    media_path=real_media_path,
                     audio_parameters=types.AudioQuality.HIGH,
                     video_parameters=types.VideoQuality.HD_720p,
                     audio_flags=types.MediaStream.Flags.REQUIRED,
@@ -257,8 +258,9 @@ class TgCall(PyTgCalls):
 
         try:
             if not stream_success:
+                real_media_path = os.path.abspath(media_path) if not media_path.startswith("http") else media_path
                 stream = types.MediaStream(
-                    media_path=media_path,
+                    media_path=real_media_path,
                     audio_parameters=types.AudioQuality.HIGH,
                     video_parameters=types.VideoQuality.HD_720p,
                     audio_flags=types.MediaStream.Flags.REQUIRED,
