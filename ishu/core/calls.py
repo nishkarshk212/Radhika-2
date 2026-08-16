@@ -290,9 +290,9 @@ class TgCall(PyTgCalls):
                 )
         except Exception as e:
             err_str = str(e)
-            if "GROUPCALL_INVALID" in err_str or "GroupCallNotFound" in err_str:
-                logger.info("Voice chat closed/invalid in chat %s for %s", chat_id, getattr(media, "id", "?"))
-                await message.edit_text("❌ **No active Voice Chat found in this group.**\n\n`Please start a Voice Chat in group settings first!`")
+            if any(err in err_str for err in ["GROUPCALL_INVALID", "GroupCallNotFound", "CHANNEL_INVALID", "ChannelInvalid"]):
+                logger.info("Voice chat closed/invalid/assistant not in chat %s for %s", chat_id, getattr(media, "id", "?"))
+                await message.edit_text("❌ **No active Voice Chat found or Assistant is not in group.**\n\n`Please ensure Assistant is in group & Voice Chat is started!`")
                 await self.stop_stream(chat_id)
                 return
             logger.error("Final playback failed for %s: %s", getattr(media, "id", "?"), e)
