@@ -125,18 +125,195 @@ def _evict_disk_cache(max_mb: int = 3000) -> None:
 
 _SESSION: aiohttp.ClientSession | None = None
 
+# ── InnerTube Direct Search Cache (sub-200ms) ─────────────────────────────────
+# Bypasses yt-dlp entirely for search; calls YouTube's internal InnerTube API.
+_INNERTUBE_CACHE: "dict[str, tuple[list, float]]" = {}  # query -> (results, timestamp)
+_INNERTUBE_TTL = 300  # 5 min
+
+# ── Queue Prefetch Cache: pre-warm next song's stream URL ─────────────────────
+_PREFETCH_CACHE: "dict[str, str | None]" = {}  # video_id -> stream_url
+_PREFETCH_TASKS: "dict[str, asyncio.Task]" = {}  # video_id -> running Task
+
 
 def _get_http_session() -> aiohttp.ClientSession:
     global _SESSION
     if _SESSION is None or _SESSION.closed:
         connector = aiohttp.TCPConnector(
-            limit=100,
-            ttl_dns_cache=300,
-            keepalive_timeout=60,
+            limit=200,
+            ttl_dns_cache=600,
+            keepalive_timeout=120,
             enable_cleanup_closed=True,
         )
-        _SESSION = aiohttp.ClientSession(connector=connector)
+        _SESSION = aiohttp.ClientSession(
+            connector=connector,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
     return _SESSION
+
+
+async def _innertube_search(query: str, limit: int = 10) -> list:
+    """
+    Ultra-fast YouTube search via the private InnerTube API (~150-250ms).
+    Bypasses yt-dlp completely. Falls back to py_yt VideosSearch on failure.
+    """
+    cache_key = f"{query}:{limit}"
+    now = _time.time()
+    if cache_key in _INNERTUBE_CACHE:
+        results, ts = _INNERTUBE_CACHE[cache_key]
+        if now - ts < _INNERTUBE_TTL:
+            return results
+
+    try:
+        session = _get_http_session()
+        payload = {
+            "query": query,
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": "2.20240101.00.00",
+                    "hl": "en",
+                    "gl": "US",
+                }
+            },
+            "params": "EgIQAQ=="  # filter: videos only
+        }
+        async with session.post(
+            "https://www.youtube.com/youtubei/v1/search",
+            json=payload,
+            params={"prettyPrint": "false"},
+            headers={"Content-Type": "application/json", "X-YouTube-Client-Name": "1", "X-YouTube-Client-Version": "2.20240101"},
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as resp:
+            if resp.status != 200:
+                return []
+            data = await resp.json(content_type=None)
+
+        items = []
+        for section in data.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get(
+            "primaryContents", {}).get("sectionListRenderer", {}).get("contents", []):
+            for item in section.get("itemSectionRenderer", {}).get("contents", []):
+                vr = item.get("videoRenderer")
+                if not vr:
+                    continue
+                vid = vr.get("videoId")
+                title = "".join(t.get("text", "") for t in vr.get("title", {}).get("runs", []))
+                duration_text = vr.get("lengthText", {}).get("simpleText", "")
+                channel = "".join(t.get("text", "") for t in
+                    vr.get("ownerText", {}).get("runs", []) or
+                    vr.get("shortBylineText", {}).get("runs", []))
+                thumbs = vr.get("thumbnail", {}).get("thumbnails", [])
+                thumb = thumbs[-1]["url"].split("?")[0] if thumbs else ""
+                if vid and title:
+                    items.append({"id": vid, "title": title, "duration": duration_text,
+                                  "channel": channel, "thumbnail": thumb,
+                                  "link": f"https://www.youtube.com/watch?v={vid}"})
+                if len(items) >= limit:
+                    break
+            if len(items) >= limit:
+                break
+
+        _INNERTUBE_CACHE[cache_key] = (items, now)
+        return items
+    except Exception as e:
+        logger.debug("InnerTube search failed (%s), falling back to py_yt", e)
+        return []
+
+
+async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | None:
+    """
+    Race multiple API servers simultaneously: use whichever responds first.
+    Returns a direct HTTP stream URL (not a local file path).
+    """
+    # Check prefetch cache first — instant hit!
+    if video_id in _PREFETCH_CACHE and _PREFETCH_CACHE[video_id]:
+        logger.info("[prefetch] ⚡ Instant cache hit for %s", video_id)
+        return _PREFETCH_CACHE[video_id]
+
+    api_servers = []
+    for url_var, key_var in [
+        ("RAILWAY_YT_API_URL",  "RAILWAY_YT_API_KEY"),
+        ("LILY_API_URL",        "LILY_API_KEY"),
+        ("YOUTUBE_API_URL",     "YOUTUBE_API_KEY"),
+        ("YT_API_URL",          "YT_API_KEY"),
+    ]:
+        url = getattr(config, url_var, None) or os.environ.get(url_var)
+        key = getattr(config, key_var, None) or os.environ.get(key_var)
+        if url and key:
+            entry = (url.rstrip("/"), key)
+            if entry not in api_servers:
+                api_servers.append(entry)
+
+    if not api_servers:
+        return None
+
+    endpoint = "play/video/hq" if media_type == "video" else "play/audio"
+
+    async def _probe(base_url: str, api_key: str) -> str | None:
+        try:
+            session = _get_http_session()
+            stream_url = f"{base_url}/{endpoint}?id={video_id}"
+            async with session.get(
+                stream_url,
+                headers={"X-API-Key": api_key},
+                timeout=aiohttp.ClientTimeout(connect=3, total=20),
+                allow_redirects=True,
+            ) as resp:
+                if resp.status == 200:
+                    logger.info("[race] ✓ %s won for %s", base_url, video_id)
+                    return str(resp.url)
+        except Exception:
+            pass
+        return None
+
+    tasks = [asyncio.create_task(_probe(url, key)) for url, key in api_servers]
+    try:
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            if result:
+                # Cancel remaining to avoid waste
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                return result
+    except Exception:
+        pass
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+    return None
+
+
+def prefetch_next(video_id: str, media_type: str = "audio") -> None:
+    """
+    Fire-and-forget: pre-warm the stream URL for video_id in the background.
+    Call this while the current song is playing so the next song is instant.
+    """
+    if video_id in _PREFETCH_CACHE or video_id in _PREFETCH_TASKS:
+        return  # Already fetching or cached
+
+    async def _do_prefetch():
+        try:
+            url = await _race_api_stream(video_id, media_type)
+            _PREFETCH_CACHE[video_id] = url
+            if url:
+                logger.info("[prefetch] ✓ Pre-warmed stream for %s", video_id)
+        except Exception as e:
+            logger.debug("[prefetch] failed for %s: %s", video_id, e)
+        finally:
+            _PREFETCH_TASKS.pop(video_id, None)
+
+    loop = asyncio.get_event_loop()
+    task = loop.create_task(_do_prefetch())
+    _PREFETCH_TASKS[video_id] = task
+
+
+def clear_prefetch(video_id: str) -> None:
+    """Remove pre-warmed URL after it has been consumed."""
+    _PREFETCH_CACHE.pop(video_id, None)
+    task = _PREFETCH_TASKS.pop(video_id, None)
+    if task and not task.done():
+        task.cancel()
 
 
 # YT-dlp gets occasionally blocked by YouTube's bot check.
@@ -390,21 +567,44 @@ async def _download_with_fallback(
     media_type: str,
 ) -> tuple[str | None, str]:
     """
-    Download using Railway YT API (with retries) -> Fallback to direct fast yt-dlp.
+    Download using API Racing (parallel multi-server) -> Railway YT API -> direct yt-dlp fallback.
     Returns (file_path, downloader_name)
     """
     video_id = _extract_video_id(link) or link
 
-    # Railway YT API is the primary, reliable path. yt-dlp almost always fails
-    # on Heroku IPs ("Sign in to confirm you're not a bot"), so retry Railway
-    # up to 5 times with exponential backoff (2s, 4s, 8s, 16s) before giving up.
-    max_railway_attempts = 5
+    # ⚡ Step 0: Try prefetch cache & race APIs simultaneously (fastest path)
+    raced_url = await _race_api_stream(video_id, media_type)
+    if raced_url:
+        # Got a live stream URL — download it via the fastest API
+        ext = "mp4" if media_type == "video" else "mp3"
+        file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        try:
+            session = _get_http_session()
+            async with session.get(
+                raced_url,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as resp:
+                if resp.status == 200:
+                    with open(file_path, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(512 * 1024):
+                            f.write(chunk)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        clear_prefetch(video_id)
+                        _evict_disk_cache()
+                        logger.info("[race] ⚡ Downloaded %s via API racing", video_id)
+                        return file_path, "race"
+        except Exception as e:
+            logger.warning("[race] Download from raced URL failed for %s: %s", video_id, e)
+
+    # Step 1: Single Railway API (with retries)
+    max_railway_attempts = 3
     for attempt in range(1, max_railway_attempts + 1):
         result = await _railway_download(video_id, media_type)
         if result:
             return result, "railway"
         if attempt < max_railway_attempts:
-            wait = min(attempt, 3)
+            wait = min(attempt, 2)
             logger.info(
                 "Railway YT API attempt %s/%s failed for %s. Retrying in %ss...",
                 attempt, max_railway_attempts, video_id, wait,
@@ -566,8 +766,11 @@ class YouTube:
             ] if not explicit_avoid else [query.strip()]
 
             for sq in search_queries:
-                results = VideosSearch(sq, limit=10)
-                raw_results = (await results.next())["result"]
+                # ⚡ Try ultra-fast InnerTube first (~150ms), fallback to py_yt
+                raw_results = await _innertube_search(sq, limit=10)
+                if not raw_results:
+                    results = VideosSearch(sq, limit=10)
+                    raw_results = (await results.next())["result"]
                 if not raw_results:
                     continue
 
@@ -599,17 +802,19 @@ class YouTube:
                     vidid = r["id"]
                     duration_min = r.get("duration") or "00:00"
                     duration_sec = int(utils.to_seconds(duration_min)) if duration_min else 0
-                    view_count = None
-                    if "viewCount" in r and isinstance(r["viewCount"], dict):
-                        view_count = r["viewCount"].get("short") or r["viewCount"].get("text")
+                    view_count = r.get("viewCount")
+                    if isinstance(view_count, dict):
+                        view_count = view_count.get("short") or view_count.get("text")
+                    # 🚀 Pre-warm next song's stream URL in background immediately
+                    prefetch_next(vidid)
                     return Track(
                         id           = vidid,
                         title        = r["title"],
                         url          = r.get("link", self.base + vidid),
                         duration     = duration_min,
                         duration_sec = duration_sec,
-                        thumbnail    = r["thumbnails"][0]["url"].split("?")[0],
-                        channel_name = (r.get("channel") or {}).get("name", ""),
+                        thumbnail    = (r.get("thumbnails") or [{}])[0].get("url", "").split("?")[0] if r.get("thumbnails") else r.get("thumbnail", ""),
+                        channel_name = (r.get("channel") or {}).get("name", "") if isinstance(r.get("channel"), dict) else (r.get("channel") or ""),
                         message_id   = message_id,
                         video        = video,
                         time         = int(_time.time()),
