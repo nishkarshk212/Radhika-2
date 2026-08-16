@@ -221,7 +221,7 @@ class TgCall(PyTgCalls):
                         else types.MediaStream.Flags.IGNORE
                     ),
                     ffmpeg_parameters=(
-                        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -bufsize 64k"
+                        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -probesize 32k -analyzeduration 0 -bufsize 32k"
                         + (f" -ss {seek_time}" if seek_time > 1 else "")
                     ) if real_media_path.startswith("http") else (
                         f"-ss {seek_time}" if seek_time > 1 else None
@@ -277,7 +277,7 @@ class TgCall(PyTgCalls):
                         else types.MediaStream.Flags.IGNORE
                     ),
                     ffmpeg_parameters=(
-                        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -bufsize 64k"
+                        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -probesize 32k -analyzeduration 0 -bufsize 32k"
                         + (f" -ss {seek_time}" if seek_time > 1 else "")
                     ) if real_media_path.startswith("http") else (
                         f"-ss {seek_time}" if seek_time > 1 else None
