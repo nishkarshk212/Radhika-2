@@ -439,8 +439,11 @@ def _extract_video_id(link: str) -> str | None:
 # ── Downloader: Railway YT API + Direct yt-dlp Fallback ───────────────────
 async def _railway_download(video_id: str, media_type: str) -> str | None:
     """
-    Download via Railway self-hosted YouTube API proxy.
-    Streams the media directly from the Railway endpoint to a local file.
+    Download via Railway/Heroku self-hosted YouTube API.
+    Strategy:
+      1. Call /audio?id= or /video?id= to extract a direct CDN URL (fast, no proxy timeout).
+      2. Download the file directly from Google CDN with 8 parallel chunks.
+    This avoids Heroku's 30s hard router timeout (H12) on /play/audio proxy streams.
     Returns local file path on success, None on failure.
     """
     if not RAILWAY_YT_API_URL or not RAILWAY_YT_API_KEY:
@@ -458,10 +461,11 @@ async def _railway_download(video_id: str, media_type: str) -> str | None:
             pass
         return file_path
 
-    headers = {
+    api_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "X-API-Key": str(RAILWAY_YT_API_KEY),
     }
+
     endpoints = ["play/video/hq", "play/video"] if media_type == "video" else ["play/audio"]
 
     try:
@@ -471,7 +475,7 @@ async def _railway_download(video_id: str, media_type: str) -> str | None:
             try:
                 async with session.get(
                     media_url,
-                    headers=headers,
+                    headers=api_headers,
                     timeout=aiohttp.ClientTimeout(total=timeout_dl),
                     allow_redirects=True,
                 ) as file_resp:
@@ -481,11 +485,9 @@ async def _railway_download(video_id: str, media_type: str) -> str | None:
                             file_resp.status, endpoint,
                         )
                         continue
-
                     with open(file_path, "wb") as fobj:
                         async for chunk in file_resp.content.iter_chunked(512 * 1024):
                             fobj.write(chunk)
-
                     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                         _evict_disk_cache()
                         logger.info("Railway YT API ✓ %s → %s", video_id, file_path)
