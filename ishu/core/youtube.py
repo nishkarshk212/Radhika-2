@@ -323,16 +323,59 @@ _COOKIE_PATH: str | None = None
 
 
 def cookie_txt_file() -> str | None:
-    """Return the best available Netscape-format cookie file path for yt-dlp."""
+    """Return the best available Netscape-format cookie file path for yt-dlp.
+
+    Priority:
+    1. Already resolved & cached (_COOKIE_PATH set).
+    2. Physical file at ishu/cookies/cookie_0.txt (written by COOKIES_URL loader).
+    3. Decoded from YTDLP_COOKIES_BASE64 env var (base64 Netscape cookie string).
+    4. Raw text from COOKIES_DATA env var.
+    """
     global _COOKIE_PATH
     if _COOKIE_PATH is not None:
         return _COOKIE_PATH
+
     base_dir = os.path.dirname(os.path.abspath(__file__))
     folder = os.path.abspath(os.path.join(base_dir, "..", "cookies"))
     primary = os.path.join(folder, "cookie_0.txt")
-    if os.path.exists(primary):
+
+    # 1. Physical file already present (e.g. written by save_cookies / COOKIES_URL)
+    if os.path.exists(primary) and os.path.getsize(primary) > 0:
         _COOKIE_PATH = primary
         return primary
+
+    # 2. Decode from YTDLP_COOKIES_BASE64 env var (set on Heroku by the deploy script)
+    b64 = os.environ.get("YTDLP_COOKIES_BASE64") or os.environ.get("YOUTUBE_COOKIES_BASE64") or os.environ.get("COOKIES_BASE64")
+    if b64:
+        try:
+            import base64, gzip as _gzip
+            raw = base64.b64decode(b64)
+            if raw[:2] == b"\x1f\x8b":  # gzip magic bytes
+                raw = _gzip.decompress(raw)
+            decoded = raw.decode("utf-8")
+            os.makedirs(folder, exist_ok=True)
+            with open(primary, "w", encoding="utf-8") as f:
+                f.write(decoded)
+            logger.info("cookie_txt_file: decoded YTDLP_COOKIES_BASE64 → %s", primary)
+            _COOKIE_PATH = primary
+            return primary
+        except Exception as e:
+            logger.warning("cookie_txt_file: failed to decode base64 cookies: %s", e)
+
+    # 3. Raw Netscape cookie text from COOKIES_DATA env var
+    raw_data = os.environ.get("COOKIES_DATA", "").strip()
+    if raw_data and "youtube.com" in raw_data:
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(primary, "w", encoding="utf-8") as f:
+                f.write(raw_data)
+            logger.info("cookie_txt_file: wrote COOKIES_DATA → %s", primary)
+            _COOKIE_PATH = primary
+            return primary
+        except Exception as e:
+            logger.warning("cookie_txt_file: failed to write COOKIES_DATA: %s", e)
+
+    # 4. Any other .txt file in the cookies folder
     try:
         txt_files = glob.glob(os.path.join(folder, "*.txt"))
     except Exception:
