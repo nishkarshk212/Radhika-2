@@ -560,36 +560,55 @@ async def _download_with_fallback(
     Returns (file_path, downloader_name)
     """
     video_id = _extract_video_id(link) or link
+    ext = "mp4" if media_type == "video" else "mp3"
+    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-    # ⚡ Step 0: Try prefetch cache & race APIs simultaneously (fastest path)
-    raced_url = await _race_api_stream(video_id, media_type)
-    if raced_url:
-        # Got a live stream URL — download it via the fastest API
-        ext = "mp4" if media_type == "video" else "mp3"
-        file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        return file_path, "cache"
+
+    api_servers = []
+    for url_var, key_var in [
+        ("RAILWAY_YT_API_URL",  "RAILWAY_YT_API_KEY"),
+        ("LILY_API_URL",        "LILY_API_KEY"),
+        ("YOUTUBE_API_URL",     "YOUTUBE_API_KEY"),
+        ("YT_API_URL",          "YT_API_KEY"),
+    ]:
+        url = getattr(config, url_var, None) or os.environ.get(url_var)
+        key = getattr(config, key_var, None) or os.environ.get(key_var)
+        if url and key:
+            entry = (url.rstrip("/"), key)
+            if entry not in api_servers:
+                api_servers.append(entry)
+
+    endpoint = "play/video/hq" if media_type == "video" else "play/audio"
+    session = _get_http_session()
+
+    for base_url, api_key in api_servers:
+        media_url = f"{base_url}/{endpoint}?id={video_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "X-API-Key": str(api_key),
+        }
         try:
-            session = _get_http_session()
             async with session.get(
-                raced_url,
-                timeout=aiohttp.ClientTimeout(total=300),
+                media_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=90),
+                allow_redirects=True,
             ) as resp:
                 if resp.status == 200:
                     with open(file_path, "wb") as f:
                         async for chunk in resp.content.iter_chunked(512 * 1024):
                             f.write(chunk)
                     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                        clear_prefetch(video_id)
                         _evict_disk_cache()
-                        logger.info("[race] ⚡ Downloaded %s via API racing", video_id)
-                        return file_path, "race"
+                        logger.info("Railway YT API ✓ %s via %s", video_id, base_url)
+                        return file_path, "railway"
+                else:
+                    logger.warning("Railway YT API status %s from %s for %s", resp.status, base_url, video_id)
         except Exception as e:
-            logger.warning("[race] Download from raced URL failed for %s: %s", video_id, e)
-
-    # Step 1: Railway API download (server-side download, pure API)
-    result = await _railway_download(video_id, media_type)
-    if result:
-        return result, "railway"
+            logger.warning("Railway YT API download from %s failed for %s: %s", base_url, video_id, e)
 
     logger.error("Download failed for: %s via Railway YT API", video_id)
     await _notify_download_failure(video_id, media_type)
