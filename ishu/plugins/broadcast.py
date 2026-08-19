@@ -51,6 +51,20 @@ async def _broadcast(_, message: types.Message):
                 await asyncio.sleep(0.2)
             except errors.FloodWait as fw:
                 await asyncio.sleep(fw.value + 10)
+            except (errors.ChatWriteForbidden, errors.ChatAdminRequired, errors.ChannelPrivate, errors.PeerIdInvalid):
+                if chat in groups:
+                    try:
+                        await db.rm_chat(chat)
+                    except Exception:
+                        pass
+                continue
+            except errors.UserIsBlocked:
+                if chat in users:
+                    try:
+                        await db.rm_user(chat)
+                    except Exception:
+                        pass
+                continue
             except Exception as ex:
                 if not failed:
                     failed = open("errors.txt", "w")

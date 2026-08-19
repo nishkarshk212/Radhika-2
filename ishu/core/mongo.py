@@ -406,18 +406,25 @@ class MongoDB:
         return chat_id in self.chats
 
     async def add_chat(self, chat_id: int, chat_title: str = None) -> None:
-        if not await self.is_chat(chat_id):
+        if chat_id not in self.chats:
             self.chats.append(chat_id)
-            await self.chatsdb.insert_one({"_id": chat_id, "title": chat_title})
+        update_data = {"_id": chat_id}
+        if chat_title:
+            update_data["title"] = chat_title
+        await self.chatsdb.update_one(
+            {"_id": chat_id},
+            {"$set": update_data},
+            upsert=True,
+        )
 
     async def rm_chat(self, chat_id: int) -> None:
-        if await self.is_chat(chat_id):
+        if chat_id in self.chats:
             self.chats.remove(chat_id)
-            await self.chatsdb.delete_one({"_id": chat_id})
+        await self.chatsdb.delete_one({"_id": chat_id})
 
     async def get_chats(self) -> list:
-        if not self.chats:
-            self.chats.extend([chat["_id"] async for chat in self.chatsdb.find()])
+        chats = [chat["_id"] async for chat in self.chatsdb.find()]
+        self.chats = list(set(chats))
         return self.chats
 
     # COMMAND DELETE
@@ -602,18 +609,22 @@ class MongoDB:
         return user_id in self.users
 
     async def add_user(self, user_id: int) -> None:
-        if not await self.is_user(user_id):
+        if user_id not in self.users:
             self.users.append(user_id)
-            await self.usersdb.insert_one({"_id": user_id})
+        await self.usersdb.update_one(
+            {"_id": user_id},
+            {"$set": {"_id": user_id}},
+            upsert=True,
+        )
 
     async def rm_user(self, user_id: int) -> None:
-        if await self.is_user(user_id):
+        if user_id in self.users:
             self.users.remove(user_id)
-            await self.usersdb.delete_one({"_id": user_id})
+        await self.usersdb.delete_one({"_id": user_id})
 
     async def get_users(self) -> list:
-        if not self.users:
-            self.users.extend([user["_id"] async for user in self.usersdb.find()])
+        users = [user["_id"] async for user in self.usersdb.find()]
+        self.users = list(set(users))
         return self.users
 
 

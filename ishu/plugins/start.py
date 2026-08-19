@@ -22,35 +22,36 @@ async def _help(_, m: types.Message):
 
 
 START_IMAGES = [
-    "https://i.ibb.co/nMTGfdrC/Cute-girl-pic.jpg",
-    "https://i.ibb.co/5X3GtfK3/2.jpg",
-    "https://i.ibb.co/wDnd11t/Bandana-hairstyle.jpg",
-    "https://i.ibb.co/TqH6tNYM/image.jpg",
-    "https://i.ibb.co/0jw84PFV/Elegant-Indian-beauty-with-dreamy-aesthetic-vibes.jpg",
+    "https://i.ibb.co/sdFLLwPX/2f504cd6bcfde8d4d8b841882e8fb808.jpg",
+    "https://i.ibb.co/cKDssQTk/56ff149d8bd3ed814f5b54dfaab008e5.jpg",
+    "https://i.ibb.co/2YRd8vFT/894bf51cc1cfbfb72f76d7c6304bf1f9.jpg",
 ]
 
 START_ANIMATION = [
-    "<blockquote><b><emoji id=5411285122215332752></emoji> ɪɴɪᴛɪᴀʟɪᴢɪɴɢ... <emoji id=5425004944270850753>💀</emoji></b></blockquote>",
-    "<blockquote><b><emoji id=5411285122215332752></emoji>  ʟᴏᴀᴅɪɴɢ ᴍᴜꜱɪᴄ ᴇɴɢɪɴᴇ... <emoji id=5470135030393090150>🎵</emoji></b></blockquote>",
-    "<blockquote><b><emoji id=5411285122215332752></emoji>  ᴄᴏɴɴᴇᴄᴛɪɴɢ ᴛᴏ ꜱᴇʀᴠᴇʀ... <emoji id=5447410659077661506>🌐</emoji></b></blockquote>",
-    "<blockquote><b><emoji id=5411285122215332752></emoji>  ꜰᴇᴛᴄʜɪɴɢ ᴘʟᴀʏʟɪꜱᴛ... <emoji id=5431721976769027887>📂</emoji></b></blockquote>",
-    "<blockquote><b><emoji id=5411285122215332752></emoji>  ᴄʜᴇᴄᴋɪɴɢ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ... <emoji id=5294339927318739359>🎙️</emoji></b></blockquote>",
-    "<blockquote><b><emoji id=5411285122215332752></emoji>  ᴏᴘᴛɪᴍɪᴢɪɴɢ ꜱᴛʀᴇᴀᴍ... <emoji id=5372917041193828849>🚀</emoji></b></blockquote>",
-    "<blockquote><b><emoji id=5411285122215332752></emoji>  ꜱʏꜱᴛᴇᴍ ꜱᴛᴀʀᴛᴇᴅ! <emoji id=5895449329430173749>❤️</emoji> <emoji id=6082505415847842709>☺️</emoji></b></blockquote>",
+    "<blockquote><b>INITIALIZING...</b></blockquote>",
+    "<blockquote><b>LOADING MUSIC ENGINE...</b></blockquote>",
+    "<blockquote><b>CONNECTING TO SERVER...</b></blockquote>",
+    "<blockquote><b>FETCHING PLAYLIST...</b></blockquote>",
+    "<blockquote><b>CHECKING VOICE CHAT...</b></blockquote>",
+    "<blockquote><b>OPTIMIZING STREAM...</b></blockquote>",
+    "<blockquote><b>SYSTEM STARTED!</b></blockquote>",
 ]
 
 
 @app.on_message(filters.command(["start"]))
 @lang.language()
-async def start(_, message: types.Message):
+async def start(client, message: types.Message):
     if message.from_user.id in app.bl_users and message.from_user.id not in db.notified:
         return await message.reply_text(message.lang["bl_user_notify"])
 
     if len(message.command) > 1 and message.command[1] == "help":
-        return await _help(_, message)
+        return await _help(client, message)
+
+    bot_un = getattr(client, "username", None) or getattr(getattr(client, "me", None), "username", None) or app.username
+    bot_nm = getattr(client, "name", None) or getattr(getattr(client, "me", None), "first_name", None) or app.name
 
     private = message.chat.type == enums.ChatType.PRIVATE
-    key = buttons.start_key(message.lang, private)
+    key = buttons.start_key(message.lang, private, bot_username=bot_un)
 
     if private:
         # Delete the /start command message
@@ -68,10 +69,10 @@ async def start(_, message: types.Message):
 
         # Build clickable mentions
         user_mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.first_name}</a>'
-        bot_mention = f'<a href="https://t.me/{app.username}">{app.name}</a>'
+        bot_mention = f'<a href="https://t.me/{bot_un}">{bot_nm}</a>'
 
         # ONE message: photo + start_pm blockquote caption + inline buttons
-        await message.reply_photo(
+        sent_msg = await message.reply_photo(
             photo=random.choice(START_IMAGES),
             caption=message.lang["start_pm"].format(user_mention, bot_mention),
             parse_mode=enums.ParseMode.HTML,
@@ -92,14 +93,18 @@ async def start(_, message: types.Message):
             uptime_str = f"{hours}ʜ:{minutes}ϻ:{seconds}ꜱ"
 
         caption_text = (
-            "<blockquote><b><emoji id=6125150373763094821>⭐</emoji> ᴀ ᴄ ᴛ ɪ ᴠ ᴇ  ᴀ ɴ ᴅ  ᴀ ʟ ɪ ᴠ ᴇ\n"
+            "<blockquote><b> ᴀ ᴄ ᴛ ɪ ᴠ ᴇ  ᴀ ɴ ᴅ  ᴀ ʟ ɪ ᴠ ᴇ\n"
             "──────────────────\n"
-            "<emoji id=6124898345082165755>⚡</emoji> ꜱʏꜱᴛᴇᴍ ɪꜱ ʀᴜɴɴɪɴɢ ꜱᴍᴏᴏᴛʜʟʏ .\n"
-            "<emoji id=6125150373763094821>⭐</emoji> ᴄᴏʀᴇ : ˹ 🇨🇦 ♫ ʟɪʟʏ፝֟ ꭙ ᴍᴜꜱɪᴄʙᴏᴛ 𐦍 ˼ ᴇɴɢɪɴᴇ ᴠ2.0\n"
+            " ꜱʏꜱᴛᴇᴍ ɪꜱ ʀᴜɴɴɪɴɢ ꜱᴍᴏᴏᴛʜʟʏ .\n"
+            f" ᴄᴏʀᴇ : {bot_nm} ᴇɴɢɪɴᴇ ᴠ2.0\n"
             "──────────────────\n"
-            "<emoji id=6124898345082165755>⚡</emoji> ᴜᴘᴛɪᴍᴇ : " + uptime_str + "</b></blockquote>"
+            " ᴜᴘᴛɪᴍᴇ : " + uptime_str + "</b></blockquote>"
         )
-        await message.reply_photo(
+        try:
+            await message.react(random.choice(["", "", "", "", ""]))
+        except Exception:
+            pass
+        sent_msg = await message.reply_photo(
             photo=random.choice(START_IMAGES),
             caption=caption_text,
             parse_mode=enums.ParseMode.HTML,
@@ -107,17 +112,22 @@ async def start(_, message: types.Message):
             quote=True,
             has_spoiler=True,
         )
+        try:
+            await sent_msg.react(random.choice(["", "", "", "", "", "", ""]))
+        except Exception:
+            pass
 
+    b_id = getattr(client, "id", None) or getattr(getattr(client, "me", None), "id", None)
     if private:
-        if await db.is_user(message.from_user.id):
-            return
-        await utils.send_log(message)
-        await db.add_user(message.from_user.id)
+        is_new = not await db.is_user(message.from_user.id)
+        if is_new:
+            await utils.send_log(message)
+        await db.add_user(message.from_user.id, bot_id=b_id)
     else:
-        if await db.is_chat(message.chat.id):
-            return
-        await utils.send_log(message, True)
-        await db.add_chat(message.chat.id, message.chat.title)
+        is_new = not await db.is_chat(message.chat.id)
+        if is_new:
+            await utils.send_log(message, True)
+        await db.add_chat(message.chat.id, message.chat.title, bot_id=b_id)
 
 
 
@@ -146,22 +156,22 @@ async def _new_member(_, message: types.Message):
                 await db.add_chat(message.chat.id, message.chat.title)
         elif not member.is_bot:
             welcome_pm_text = (
-                f"👋 <b>Welcome {member.mention}!</b>\n\n"
-                f"Thank you for joining <b>{message.chat.title}</b>! 🎵\n\n"
+                f" <b>Welcome {member.mention}!</b>\n\n"
+                f"Thank you for joining <b>{message.chat.title}</b>! \n\n"
                 f"I am <b>{app.name}</b>, your ultimate high-quality Music & Video Bot!\n"
                 f"You can stream music, HD videos, playlists, and radio directly in voice chats.\n\n"
-                f"🎧 <b>Quick Commands:</b>\n"
+                f" <b>Quick Commands:</b>\n"
                 f"• <code>/play [song name]</code> — Play audio song\n"
                 f"• <code>/vplay [video name]</code> — Play video song\n"
                 f"• <code>/settings</code> — Group settings\n\n"
-                f"Enjoy listening to music! 🎶"
+                f"Enjoy listening to music! "
             )
             try:
                 pm_kb = types.InlineKeyboardMarkup(
                     [
                         [
                             types.InlineKeyboardButton(
-                                text="➕ Add Me To Your Group",
+                                text=" Add Me To Your Group",
                                 url=f"https://t.me/{app.username}?startgroup=true",
                             ),
                         ]
@@ -227,8 +237,9 @@ async def slash_help(_, message: types.Message):
 # reliable way to know a group is to observe activity in it. Low priority
 # (group=99) so it never precedes command/service handlers.
 @app.on_message(filters.group & ~app.bl_users, group=99)
-async def _record_group(_, message: types.Message):
+async def _record_group(client, message: types.Message):
     chat = message.chat
     if chat.type not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
         return
-    await db.add_chat(chat.id, getattr(chat, "title", None))
+    b_id = getattr(client, "id", None) or getattr(getattr(client, "me", None), "id", None)
+    await db.add_chat(chat.id, getattr(chat, "title", None), bot_id=b_id)
