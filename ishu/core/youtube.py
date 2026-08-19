@@ -960,6 +960,16 @@ class YouTube:
 
     async def get_related_candidates(self, video_id: str, limit: int = 15) -> list[Track]:
         """Return a list of RELATED Tracks for autoplay candidate pool."""
+        # 1. Fetch title from Redis / API
+        try:
+            title = await self.title(video_id)
+            if title and title != video_id:
+                candidates = await self.search_similar_candidates(title, limit=limit)
+                if candidates:
+                    return [c for c in candidates if c.id != video_id]
+        except Exception:
+            pass
+
         link = self.base + video_id
         loop = asyncio.get_event_loop()
 
@@ -968,6 +978,7 @@ class YouTube:
                 opts = {
                     "quiet": True,
                     "no_warnings": True,
+                    "extractor_args": {"youtube": {"player_client": ["tv", "ios", "mweb"]}},
                 }
                 cookie = cookie_txt_file()
                 if cookie:
@@ -989,7 +1000,6 @@ class YouTube:
                         break
                 return candidates
             except Exception as e:
-                logger.warning("get_related_candidates failed for %s: %s", video_id, e)
                 return []
 
         try:
