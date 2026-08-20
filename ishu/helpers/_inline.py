@@ -319,13 +319,14 @@ class Inline:
         )
 
     def start_key(
-        self, lang: dict, private: bool = False
+        self, lang: dict, private: bool = False, bot_username: str = None, **kwargs
     ) -> types.InlineKeyboardMarkup:
+        b_un = bot_username or getattr(app, "username", "")
         rows = [
             [
                 self.ikb(
                     text=f"{lang['add_me']} ✦",
-                    url=f"https://t.me/{app.username}?startgroup=true",
+                    url=f"https://t.me/{b_un}?startgroup=true",
                     style=enums.ButtonStyle.SUCCESS,
                     icon_custom_emoji_id="5469798743043764619",
                 )
