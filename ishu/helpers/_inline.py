@@ -36,6 +36,8 @@ class Inline:
         autoplay: bool | None = None,
         mode: str = None,
         link: str = None,
+        bot_username: str = None,
+        **kwargs,
     ) -> types.InlineKeyboardMarkup:
         # Reuse the last-known rows for any dimension not explicitly passed,
         # so a single-row update (timer tick OR autoplay toggle) preserves the

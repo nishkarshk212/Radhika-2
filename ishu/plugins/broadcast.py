@@ -36,40 +36,52 @@ async def _broadcast(_, message: types.Message):
     chats = list(groups | users)
     failed = None
 
+    try:
+        from ishu.helpers import font
+    except ImportError:
+        font = None
+
     async with broadcasting:
-        for chat in chats:
-            try:
-                (
-                    await msg.copy(chat, reply_markup=msg.reply_markup)
-                    if copy
-                    else await msg.forward(chat)
-                )
-                if chat in groups:
-                    count += 1
-                else:
-                    ucount += 1
-                await asyncio.sleep(0.2)
-            except errors.FloodWait as fw:
-                await asyncio.sleep(fw.value + 10)
-            except (errors.ChatWriteForbidden, errors.ChatAdminRequired, errors.ChannelPrivate, errors.PeerIdInvalid):
-                if chat in groups:
-                    try:
-                        await db.rm_chat(chat)
-                    except Exception:
-                        pass
-                continue
-            except errors.UserIsBlocked:
-                if chat in users:
-                    try:
-                        await db.rm_user(chat)
-                    except Exception:
-                        pass
-                continue
-            except Exception as ex:
-                if not failed:
-                    failed = open("errors.txt", "w")
-                failed.write(f"{chat} - {ex}\n")
-                continue
+        prev_font_state = getattr(font, "is_font_transform_enabled", True) if font else True
+        if font:
+            font.is_font_transform_enabled = False
+        try:
+            for chat in chats:
+                try:
+                    (
+                        await msg.copy(chat, reply_markup=msg.reply_markup)
+                        if copy
+                        else await msg.forward(chat)
+                    )
+                    if chat in groups:
+                        count += 1
+                    else:
+                        ucount += 1
+                    await asyncio.sleep(0.2)
+                except errors.FloodWait as fw:
+                    await asyncio.sleep(fw.value + 10)
+                except (errors.ChatWriteForbidden, errors.ChatAdminRequired, errors.ChannelPrivate, errors.PeerIdInvalid):
+                    if chat in groups:
+                        try:
+                            await db.rm_chat(chat)
+                        except Exception:
+                            pass
+                    continue
+                except errors.UserIsBlocked:
+                    if chat in users:
+                        try:
+                            await db.rm_user(chat)
+                        except Exception:
+                            pass
+                    continue
+                except Exception as ex:
+                    if not failed:
+                        failed = open("errors.txt", "w")
+                    failed.write(f"{chat} - {ex}\n")
+                    continue
+        finally:
+            if font:
+                font.is_font_transform_enabled = prev_font_state
 
     text = message.lang["gcast_end"].format(count, ucount)
     if failed:
