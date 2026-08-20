@@ -235,6 +235,7 @@ async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | No
         ("LILY_API_URL",        "LILY_API_KEY"),
         ("YOUTUBE_API_URL",     "YOUTUBE_API_KEY"),
         ("YT_API_URL",          "YT_API_KEY"),
+        ("PANDA_API_URL",       "PANDA_API_KEY"),
     ]:
         url = getattr(config, url_var, None) or os.environ.get(url_var)
         key = getattr(config, key_var, None) or os.environ.get(key_var)
@@ -573,6 +574,7 @@ async def _download_with_fallback(
         ("LILY_API_URL",        "LILY_API_KEY"),
         ("YOUTUBE_API_URL",     "YOUTUBE_API_KEY"),
         ("YT_API_URL",          "YT_API_KEY"),
+        ("PANDA_API_URL",       "PANDA_API_KEY"),
     ]:
         url = getattr(config, url_var, None) or os.environ.get(url_var)
         key = getattr(config, key_var, None) or os.environ.get(key_var)
