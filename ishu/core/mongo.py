@@ -405,15 +405,18 @@ class MongoDB:
     async def is_chat(self, chat_id: int) -> bool:
         return chat_id in self.chats
 
-    async def add_chat(self, chat_id: int, chat_title: str = None) -> None:
+    async def add_chat(self, chat_id: int, chat_title: str = None, bot_id: int = None, **kwargs) -> None:
         if chat_id not in self.chats:
             self.chats.append(chat_id)
         update_data = {"_id": chat_id}
         if chat_title:
             update_data["title"] = chat_title
+        update_op = {"$set": update_data}
+        if bot_id:
+            update_op["$addToSet"] = {"bot_ids": bot_id}
         await self.chatsdb.update_one(
             {"_id": chat_id},
-            {"$set": update_data},
+            update_op,
             upsert=True,
         )
 
@@ -608,12 +611,15 @@ class MongoDB:
     async def is_user(self, user_id: int) -> bool:
         return user_id in self.users
 
-    async def add_user(self, user_id: int) -> None:
+    async def add_user(self, user_id: int, bot_id: int = None, **kwargs) -> None:
         if user_id not in self.users:
             self.users.append(user_id)
+        update_op = {"$set": {"_id": user_id}}
+        if bot_id:
+            update_op["$addToSet"] = {"bot_ids": bot_id}
         await self.usersdb.update_one(
             {"_id": user_id},
-            {"$set": {"_id": user_id}},
+            update_op,
             upsert=True,
         )
 
