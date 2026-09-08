@@ -596,20 +596,27 @@ async def _download_with_fallback(
             async with session.get(
                 media_url,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=90),
+                timeout=aiohttp.ClientTimeout(total=180),
                 allow_redirects=True,
             ) as resp:
                 if resp.status == 200:
                     with open(file_path, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(512 * 1024):
-                            f.write(chunk)
-                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        try:
+                            async for chunk in resp.content.iter_chunked(512 * 1024):
+                                f.write(chunk)
+                        except (aiohttp.ClientPayloadError, asyncio.TimeoutError) as chunk_err:
+                            logger.warning("Partial chunk download notice for %s via %s: %s", video_id, base_url, chunk_err)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 100 * 1024:
                         _evict_disk_cache()
-                        logger.info("Railway YT API ✓ %s via %s", video_id, base_url)
+                        logger.info("Railway YT API ✓ %s via %s (size: %s MB)", video_id, base_url, round(os.path.getsize(file_path)/(1024*1024), 2))
                         return file_path, "railway"
                 else:
                     logger.warning("Railway YT API status %s from %s for %s", resp.status, base_url, video_id)
         except Exception as e:
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 500 * 1024:
+                _evict_disk_cache()
+                logger.info("Railway YT API partial success ✓ %s via %s (size: %s MB)", video_id, base_url, round(os.path.getsize(file_path)/(1024*1024), 2))
+                return file_path, "railway"
             logger.warning("Railway YT API download from %s failed for %s: %s", base_url, video_id, e)
 
     logger.error("Download failed for: %s via Railway YT API", video_id)
