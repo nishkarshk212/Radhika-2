@@ -222,6 +222,7 @@ async def _innertube_search(query: str, limit: int = 10) -> list:
 async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | None:
     """
     Race multiple API servers simultaneously: use whichever responds first.
+    Prefers /audio (JSON CDN URL, no Heroku proxy) over /play/audio (streaming proxy).
     Returns a direct HTTP stream URL (not a local file path).
     """
     # Check prefetch cache first — instant hit!
@@ -247,20 +248,39 @@ async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | No
     if not api_servers:
         return None
 
-    endpoint = "play/video/hq" if media_type == "video" else "play/audio"
+    # Primary: /audio or /video endpoint returns JSON with direct CDN URL — no Heroku proxy overhead
+    json_ep    = "video" if media_type == "video" else "audio"
+    proxy_ep   = "play/video/hq" if media_type == "video" else "play/audio"
 
     async def _probe(base_url: str, api_key: str) -> str | None:
+        session = _get_http_session()
+        hdrs = {"X-API-Key": api_key}
+        # ── Fast path: /audio?id= → JSON with direct googlevideo CDN URL ─────
         try:
-            session = _get_http_session()
-            stream_url = f"{base_url}/{endpoint}?id={video_id}"
             async with session.get(
-                stream_url,
-                headers={"X-API-Key": api_key},
-                timeout=aiohttp.ClientTimeout(connect=3, total=20),
+                f"{base_url}/{json_ep}?id={video_id}",
+                headers=hdrs,
+                timeout=aiohttp.ClientTimeout(connect=4, total=20),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    media_data = data.get(json_ep) or data.get("stream") or data.get("video") or {}
+                    cdn = media_data.get("url") or media_data.get("direct_url")
+                    if cdn:
+                        logger.info("[race] ✓ %s won for %s (CDN URL)", base_url, video_id)
+                        return cdn
+        except Exception:
+            pass
+        # ── Fallback: /play/audio proxy stream ────────────────────────────────
+        try:
+            async with session.get(
+                f"{base_url}/{proxy_ep}?id={video_id}",
+                headers=hdrs,
+                timeout=aiohttp.ClientTimeout(connect=4, total=25),
                 allow_redirects=True,
             ) as resp:
                 if resp.status == 200:
-                    logger.info("[race] ✓ %s won for %s", base_url, video_id)
+                    logger.info("[race] ✓ %s won for %s (proxy URL)", base_url, video_id)
                     return str(resp.url)
         except Exception:
             pass
@@ -271,7 +291,6 @@ async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | No
         for coro in asyncio.as_completed(tasks):
             result = await coro
             if result:
-                # Cancel remaining to avoid waste
                 for t in tasks:
                     if not t.done():
                         t.cancel()
@@ -552,76 +571,71 @@ async def _railway_download(video_id: str, media_type: str) -> str | None:
 
 
 async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
-    """Fast direct yt-dlp fallback with mobile/TV client bypassing datacenter bot checks."""
+    """Fast direct yt-dlp fallback with mobile/TV client bypassing datacenter bot checks.
+
+    NOTE: ffprobe/ffmpeg may not be available on the dyno. We intentionally avoid
+    -x/--audio-format mp3 post-processing (which requires ffprobe) and instead
+    download the native audio container (m4a/opus). Telegram accepts m4a/ogg/opus
+    natively so the file plays correctly regardless of extension.
+    """
     import sys
+    import shutil
     ext = "mp4" if media_type == "video" else "mp3"
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     link = f"https://www.youtube.com/watch?v={video_id}"
+    has_ffmpeg = bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe"))
 
-    cmd = [
+    cmd_base = [
         sys.executable,
         "-m",
         "yt_dlp",
-        "--js-runtimes",
-        "node",
         "--extractor-args",
-        "youtube:player_client=android,ios,tv,mweb",
-        "-N",
-        "4",
-        "--buffer-size",
-        "1M",
-        "--http-chunk-size",
-        "10M",
+        "youtube:player_client=android,mweb,tv",
+        "-N",              "8",   # 8 parallel fragment downloads (was 4)
+        "--concurrent-fragments", "8",  # parallel DASH/HLS fragments
+        "--buffer-size",   "4M",  # 4 MB I/O buffer (was 1M)
+        "--http-chunk-size","10M",
         "--no-playlist",
         "--no-warnings",
         "-q",
-        "--socket-timeout",
-        "30",
-        "--retries",
-        "2",
+        "--socket-timeout", "30",
+        "--retries",        "2",
     ]
 
     cookie = cookie_txt_file() if "cookie_txt_file" in globals() else None
-    if cookie and os.path.exists(cookie):
-        cmd.extend(["--cookies", cookie])
 
-    if media_type == "video":
-        cmd.extend([
-            "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-            "--merge-output-format", "mp4",
-        ])
-    else:
-        cmd.extend([
-            "-f", "140/251/ba/18/b/best",
-            "-x",
-            "--audio-format", "mp3",
-            "--audio-quality", "0",
-        ])
+    def _build_cmd(with_cookie: bool) -> list:
+        cmd = list(cmd_base)
+        if with_cookie and cookie and os.path.exists(cookie):
+            cmd.extend(["--cookies", cookie])
+        if media_type == "video":
+            cmd.extend([
+                "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                "--merge-output-format", "mp4",
+            ])
+        else:
+            # Download native audio (m4a=140, opus=251) WITHOUT ffprobe-dependent post-processing.
+            # If ffmpeg+ffprobe are both available, convert to mp3 for maximum compatibility.
+            if has_ffmpeg:
+                cmd.extend([
+                    "-f", "140/251/ba/18/b/best",
+                    "-x",
+                    "--audio-format", "mp3",
+                    "--audio-quality", "5",
+                ])
+            else:
+                # No ffmpeg on this dyno — download native container, Telegram can play m4a/opus.
+                cmd.extend([
+                    "-f", "140/251/ba/18/b/best",
+                    "--no-post-overwrites",
+                ])
+        cmd.extend(["-o", os.path.join(DOWNLOAD_DIR, f"{video_id}.%(ext)s"), link])
+        return cmd
 
-    cmd.extend(["-o", os.path.join(DOWNLOAD_DIR, f"{video_id}.%(ext)s"), link])
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
-        resolved = _resolve_downloaded_file(video_id, ext)
-        if resolved:
-            _evict_disk_cache()
-            return resolved
-        logger.warning("Direct yt-dlp download returned no file for %s: %s", video_id, stderr.decode(errors="ignore"))
-    except Exception as e:
-        logger.warning("Direct yt-dlp download failed for %s: %s", video_id, e)
-
-    # If first attempt failed with cookie, retry ONCE without cookie (cookies often trigger bot-detection on datacenter IPs)
-    if cookie and os.path.exists(cookie):
+    async def _run_cmd(cmd: list) -> str | None:
         try:
-            cmd_nocookie = [arg for arg in cmd if arg != "--cookies" and arg != cookie]
             proc = await asyncio.create_subprocess_exec(
-                *cmd_nocookie,
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -630,10 +644,122 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
             if resolved:
                 _evict_disk_cache()
                 return resolved
-        except Exception as e2:
-            logger.warning("Direct yt-dlp download (no-cookie retry) failed for %s: %s", video_id, e2)
+            err_text = stderr.decode(errors="ignore").strip()
+            if err_text:
+                logger.warning("Direct yt-dlp download returned no file for %s: %s", video_id, err_text)
+        except Exception as e:
+            logger.warning("Direct yt-dlp download failed for %s: %s", video_id, e)
+        return None
+
+    # Attempt 1: with cookie (if available)
+    result = await _run_cmd(_build_cmd(with_cookie=True))
+    if result:
+        return result
+
+    # Attempt 2: no cookie — cookies sometimes trigger bot-detection on datacenter IPs
+    if cookie and os.path.exists(cookie):
+        result = await _run_cmd(_build_cmd(with_cookie=False))
+        if result:
+            return result
 
     return None
+
+
+# ── Parallel Byte-Range Chunk Downloader ──────────────────────────────────────
+async def _parallel_chunk_download(
+    cdn_url: str,
+    file_path: str,
+    media_type: str = "audio",
+    n_chunks: int = 0,
+) -> bool:
+    """
+    Download a file from a direct CDN URL using N parallel byte-range requests.
+    Saturates upload/download bandwidth from Google CDN — much faster than a
+    single sequential stream.
+
+    Falls back to a single sequential stream if the server doesn't advertise
+    Accept-Ranges or the file is under 1 MB.
+    """
+    if n_chunks == 0:
+        n_chunks = 32 if media_type == "video" else 16
+
+    session = _get_http_session()
+
+    # ── 1. HEAD → discover Content-Length & Range support ─────────────────────
+    content_length = 0
+    range_ok = False
+    try:
+        async with session.head(
+            cdn_url,
+            timeout=aiohttp.ClientTimeout(total=8),
+            allow_redirects=True,
+        ) as r:
+            content_length = int(r.headers.get("Content-Length", 0))
+            range_ok = r.headers.get("Accept-Ranges", "").lower() == "bytes" and content_length > 0
+    except Exception:
+        pass
+
+    # ── 2. Fallback: single stream if no range support or file is tiny ─────────
+    if not range_ok or content_length < 1 * 1024 * 1024:
+        try:
+            async with session.get(
+                cdn_url,
+                timeout=aiohttp.ClientTimeout(total=300),
+                allow_redirects=True,
+            ) as r:
+                if r.status == 200:
+                    with open(file_path, "wb") as fobj:
+                        async for chunk in r.content.iter_chunked(2 * 1024 * 1024):
+                            fobj.write(chunk)
+                    return os.path.exists(file_path) and os.path.getsize(file_path) > 0
+        except Exception as e:
+            logger.warning("[chunk_dl] fallback stream failed: %s", e)
+        return False
+
+    # ── 3. Split into N chunks and download all in parallel ────────────────────
+    actual_n = min(n_chunks, max(1, content_length // (512 * 1024)))  # don't over-split
+    chunk_size = content_length // actual_n
+    ranges = [
+        (i, i * chunk_size, (i + 1) * chunk_size - 1 if i < actual_n - 1 else content_length - 1)
+        for i in range(actual_n)
+    ]
+    buffers: list[bytes | None] = [None] * actual_n
+
+    async def _fetch_chunk(idx: int, start: int, end: int) -> bool:
+        for attempt in range(3):
+            try:
+                async with session.get(
+                    cdn_url,
+                    headers={"Range": f"bytes={start}-{end}"},
+                    timeout=aiohttp.ClientTimeout(connect=5, total=120),
+                    allow_redirects=True,
+                ) as r:
+                    if r.status in (200, 206):
+                        buffers[idx] = await r.read()
+                        return True
+            except Exception as e:
+                if attempt == 2:
+                    logger.warning("[chunk_dl] chunk %d failed (3 attempts): %s", idx, e)
+        return False
+
+    results = await asyncio.gather(*[_fetch_chunk(i, s, e) for i, s, e in ranges])
+
+    if not all(results):
+        logger.warning("[chunk_dl] %d/%d chunks failed — will try sequential fallback",
+                       sum(1 for r in results if not r), actual_n)
+        return False
+
+    # ── 4. Assemble chunks in order ────────────────────────────────────────────
+    with open(file_path, "wb") as fobj:
+        for buf in buffers:
+            fobj.write(buf)  # type: ignore[arg-type]
+
+    size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+    logger.info(
+        "[chunk_dl] ✓ %s  %.1f MB via %d parallel chunks",
+        os.path.basename(file_path), size / (1024 * 1024), actual_n,
+    )
+    return size > 0
 
 
 # ── Main download entrypoint ──────────────────────────────────────────────────
@@ -642,7 +768,16 @@ async def _download_with_fallback(
     media_type: str,
 ) -> tuple[str | None, str]:
     """
-    Download using configured API servers -> fleet fallback API servers -> direct yt-dlp fallback.
+    Download using configured API servers → fleet fallback → direct yt-dlp.
+
+    Fast path (new):
+      1. Race ALL API servers simultaneously via /audio?id= (JSON) → direct CDN URL.
+         Whichever responds first wins; the rest are cancelled immediately.
+      2. Download from that CDN URL using N parallel byte-range chunks.
+      3. If parallel chunks fail, sequential stream via /play/audio proxy (old behavior).
+    Final fallback:
+      4. Direct yt-dlp download with 8 concurrent connections.
+
     Returns (file_path, downloader_name)
     """
     video_id = _extract_video_id(link) or link
@@ -668,36 +803,111 @@ async def _download_with_fallback(
             if entry not in api_servers:
                 api_servers.append(entry)
 
-    endpoint = "play/video/hq" if media_type == "video" else "play/audio"
-    session = _get_http_session()
+    if api_servers:
+        session = _get_http_session()
+        json_ep  = "video" if media_type == "video" else "audio"
+        proxy_eps = ["play/video/hq", "play/video"] if media_type == "video" else ["play/audio"]
 
-    for base_url, api_key in api_servers:
-        media_url = f"{base_url}/{endpoint}?id={video_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-API-Key": str(api_key),
-        }
+        # ── Step 1: Race all APIs simultaneously for a direct CDN URL ─────────
+        async def _get_cdn_url(base_url: str, api_key: str) -> str | None:
+            """Try /audio (JSON) first — avoids Heroku proxy & H12 timeout."""
+            hdrs = {
+                "X-API-Key": api_key,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            }
+            # Primary: /audio?id= → JSON with googlevideo CDN URL
+            try:
+                async with session.get(
+                    f"{base_url}/{json_ep}?id={video_id}",
+                    headers=hdrs,
+                    timeout=aiohttp.ClientTimeout(connect=5, total=25),
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json(content_type=None)
+                        media_data = (
+                            data.get(json_ep)
+                            or data.get("stream")
+                            or data.get("video")
+                            or {}
+                        )
+                        cdn = media_data.get("url") or media_data.get("direct_url")
+                        if cdn:
+                            logger.info("[race] ✓ %s → CDN URL (/%s)", base_url, json_ep)
+                            return cdn
+            except Exception:
+                pass
+            # Fallback: /play/audio proxy → capture final URL after redirect
+            for ep in proxy_eps:
+                try:
+                    async with session.get(
+                        f"{base_url}/{ep}?id={video_id}",
+                        headers=hdrs,
+                        timeout=aiohttp.ClientTimeout(connect=5, total=30),
+                        allow_redirects=True,
+                    ) as r:
+                        if r.status == 200:
+                            logger.info("[race] ✓ %s → proxy URL (/%s)", base_url, ep)
+                            return str(r.url)
+                except Exception:
+                    pass
+            return None
+
+        tasks = [asyncio.create_task(_get_cdn_url(u, k)) for u, k in api_servers]
+        cdn_url: str | None = None
         try:
-            async with session.get(
-                media_url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=35),
-                allow_redirects=True,
-            ) as resp:
-                if resp.status == 200:
-                    with open(file_path, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(512 * 1024):
-                            f.write(chunk)
-                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                        _evict_disk_cache()
-                        logger.info("Railway YT API ✓ %s via %s", video_id, base_url)
-                        return file_path, "railway"
-                else:
-                    logger.warning("Railway YT API status %s from %s for %s", resp.status, base_url, video_id)
-        except Exception as e:
-            logger.warning("Railway YT API download from %s failed for %s: %s", base_url, video_id, e)
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                if result:
+                    cdn_url = result
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    break
+        except Exception:
+            pass
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
 
-    # ── Fallback: Direct yt-dlp download ──
+        # ── Step 2: Download from CDN with parallel chunks ─────────────────────
+        if cdn_url:
+            ok = await _parallel_chunk_download(cdn_url, file_path, media_type)
+            if ok:
+                _evict_disk_cache()
+                return file_path, "railway"
+
+        # ── Step 3: Sequential proxy stream fallback (old behaviour) ───────────
+        proxy_ep = proxy_eps[0]
+        for base_url, api_key in api_servers:
+            media_url = f"{base_url}/{proxy_ep}?id={video_id}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "X-API-Key": str(api_key),
+            }
+            try:
+                async with session.get(
+                    media_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=35),
+                    allow_redirects=True,
+                ) as resp:
+                    if resp.status == 200:
+                        with open(file_path, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(2 * 1024 * 1024):
+                                f.write(chunk)
+                        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                            _evict_disk_cache()
+                            logger.info("Railway YT API ✓ %s via %s (sequential)", video_id, base_url)
+                            return file_path, "railway"
+                    else:
+                        logger.warning("Railway YT API status %s from %s for %s",
+                                       resp.status, base_url, video_id)
+            except Exception as e:
+                logger.warning("Railway YT API download from %s failed for %s: %s",
+                               base_url, video_id, e)
+
+    # ── Step 4: Direct yt-dlp fallback ────────────────────────────────────────
     logger.warning("All API servers failed for %s. Attempting direct yt-dlp fallback...", video_id)
     direct_res = await _direct_ytdlp_download(video_id, media_type)
     if direct_res:
