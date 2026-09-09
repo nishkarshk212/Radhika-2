@@ -668,19 +668,6 @@ async def _download_with_fallback(
             if entry not in api_servers:
                 api_servers.append(entry)
 
-    FLEET_FALLBACK_APIS = [
-        ("https://publicapi-v3-d949abed7191.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-        ("https://apihub-v3-9d48fbce0605.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-        ("https://apikey-v3-1854882f97a1.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-        ("https://panda-api-v3-6e9434966ef9.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-        ("https://noah-api-v3-12d3419875af.herokuapp.com", "Noah-LrTinhpR67h7C_HoCGykI9wHARDRJPJVz3TwBSq6wd4"),
-        ("https://titanic-api-v3-01462a8481af.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-        ("https://vbit-api-hub-4d4011c429dd.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-    ]
-    for entry in FLEET_FALLBACK_APIS:
-        if entry not in api_servers:
-            api_servers.append(entry)
-
     endpoint = "play/video/hq" if media_type == "video" else "play/audio"
     session = _get_http_session()
 

@@ -199,10 +199,10 @@ class Utilities:
            err_reason = html.escape(str(error)[:800]) if error else "Unknown error"
            song_title = html.escape(str(title or "—"))
            _tb_raw = traceback.format_exc()[-1200:]
-            if not _tb_raw.strip() or "NoneType: None" in _tb_raw:
-                tb_text = ""
-            else:
-                tb_text = "\n<pre>" + html.escape(_tb_raw) + "</pre>"
+           if not _tb_raw.strip() or "NoneType: None" in _tb_raw:
+               tb_text = ""
+           else:
+               tb_text = "\n<pre>" + html.escape(_tb_raw) + "</pre>"
 
            header = (
                "<blockquote><b>"
