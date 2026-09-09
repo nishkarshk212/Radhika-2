@@ -138,11 +138,13 @@ _PREFETCH_TASKS: "dict[str, asyncio.Task]" = {}  # video_id -> running Task
 def _get_http_session() -> aiohttp.ClientSession:
     global _SESSION
     if _SESSION is None or _SESSION.closed:
+        import socket
         connector = aiohttp.TCPConnector(
             limit=200,
             ttl_dns_cache=600,
             keepalive_timeout=120,
             enable_cleanup_closed=True,
+            family=socket.AF_INET,  # Force IPv4 to prevent Google CDN IPv6 resets
         )
         _SESSION = aiohttp.ClientSession(
             connector=connector,
@@ -589,17 +591,19 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
         sys.executable,
         "-m",
         "yt_dlp",
+        "--force-ipv4",
         "--extractor-args",
-        "youtube:player_client=android,mweb,tv",
-        "-N",              "8",   # 8 parallel fragment downloads (was 4)
+        "youtube:player_client=android,mweb,tv,ios,web_safari",
+        "--age-limit",     "99",
+        "-N",              "8",   # 8 parallel fragment downloads
         "--concurrent-fragments", "8",  # parallel DASH/HLS fragments
-        "--buffer-size",   "4M",  # 4 MB I/O buffer (was 1M)
+        "--buffer-size",   "4M",  # 4 MB I/O buffer
         "--http-chunk-size","10M",
         "--no-playlist",
         "--no-warnings",
         "-q",
         "--socket-timeout", "30",
-        "--retries",        "2",
+        "--retries",        "3",
     ]
 
     cookie = cookie_txt_file() if "cookie_txt_file" in globals() else None
@@ -671,53 +675,39 @@ async def _parallel_chunk_download(
     file_path: str,
     media_type: str = "audio",
     n_chunks: int = 0,
+    known_length: int = 0,
 ) -> bool:
     """
     Download a file from a direct CDN URL using N parallel byte-range requests.
-    Saturates upload/download bandwidth from Google CDN — much faster than a
-    single sequential stream.
-
-    Falls back to a single sequential stream if the server doesn't advertise
-    Accept-Ranges or the file is under 1 MB.
+    Saturates bandwidth from Google CDN — much faster than a single sequential stream.
+    Falls back gracefully if range requests fail.
     """
     if n_chunks == 0:
         n_chunks = 32 if media_type == "video" else 16
 
     session = _get_http_session()
 
-    # ── 1. HEAD → discover Content-Length & Range support ─────────────────────
-    content_length = 0
-    range_ok = False
-    try:
-        async with session.head(
-            cdn_url,
-            timeout=aiohttp.ClientTimeout(total=8),
-            allow_redirects=True,
-        ) as r:
-            content_length = int(r.headers.get("Content-Length", 0))
-            range_ok = r.headers.get("Accept-Ranges", "").lower() == "bytes" and content_length > 0
-    except Exception:
-        pass
-
-    # ── 2. Fallback: single stream if no range support or file is tiny ─────────
-    if not range_ok or content_length < 1 * 1024 * 1024:
+    # ── 1. Discover Content-Length & Range support ────────────────────────────
+    content_length = known_length
+    range_ok = content_length > 0
+    if content_length <= 0:
         try:
-            async with session.get(
+            async with session.head(
                 cdn_url,
-                timeout=aiohttp.ClientTimeout(total=300),
+                timeout=aiohttp.ClientTimeout(total=6),
                 allow_redirects=True,
             ) as r:
-                if r.status == 200:
-                    with open(file_path, "wb") as fobj:
-                        async for chunk in r.content.iter_chunked(2 * 1024 * 1024):
-                            fobj.write(chunk)
-                    return os.path.exists(file_path) and os.path.getsize(file_path) > 0
-        except Exception as e:
-            logger.warning("[chunk_dl] fallback stream failed: %s", e)
+                content_length = int(r.headers.get("Content-Length", 0))
+                range_ok = r.headers.get("Accept-Ranges", "").lower() == "bytes" and content_length > 0
+        except Exception:
+            pass
+
+    # If no range support or file is too small, let caller do single sequential stream
+    if not range_ok or content_length < 1 * 1024 * 1024:
         return False
 
-    # ── 3. Split into N chunks and download all in parallel ────────────────────
-    actual_n = min(n_chunks, max(1, content_length // (512 * 1024)))  # don't over-split
+    # ── 2. Split into N chunks and download all in parallel ────────────────────
+    actual_n = min(n_chunks, max(1, content_length // (512 * 1024)))
     chunk_size = content_length // actual_n
     ranges = [
         (i, i * chunk_size, (i + 1) * chunk_size - 1 if i < actual_n - 1 else content_length - 1)
@@ -731,12 +721,14 @@ async def _parallel_chunk_download(
                 async with session.get(
                     cdn_url,
                     headers={"Range": f"bytes={start}-{end}"},
-                    timeout=aiohttp.ClientTimeout(connect=5, total=120),
+                    timeout=aiohttp.ClientTimeout(connect=5, total=60),
                     allow_redirects=True,
                 ) as r:
                     if r.status in (200, 206):
-                        buffers[idx] = await r.read()
-                        return True
+                        data = await r.read()
+                        if data:
+                            buffers[idx] = data
+                            return True
             except Exception as e:
                 if attempt == 2:
                     logger.warning("[chunk_dl] chunk %d failed (3 attempts): %s", idx, e)
@@ -744,22 +736,29 @@ async def _parallel_chunk_download(
 
     results = await asyncio.gather(*[_fetch_chunk(i, s, e) for i, s, e in ranges])
 
-    if not all(results):
-        logger.warning("[chunk_dl] %d/%d chunks failed — will try sequential fallback",
+    if not all(results) or any(b is None for b in buffers):
+        logger.warning("[chunk_dl] %d/%d chunks failed — will try sequential stream fallback",
                        sum(1 for r in results if not r), actual_n)
         return False
 
-    # ── 4. Assemble chunks in order ────────────────────────────────────────────
-    with open(file_path, "wb") as fobj:
-        for buf in buffers:
-            fobj.write(buf)  # type: ignore[arg-type]
+    # ── 3. Assemble chunks in order ────────────────────────────────────────────
+    try:
+        with open(file_path, "wb") as fobj:
+            for buf in buffers:
+                if buf:
+                    fobj.write(buf)
 
-    size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-    logger.info(
-        "[chunk_dl] ✓ %s  %.1f MB via %d parallel chunks",
-        os.path.basename(file_path), size / (1024 * 1024), actual_n,
-    )
-    return size > 0
+        size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        if size > 0:
+            logger.info(
+                "[chunk_dl] ✓ %s  %.1f MB via %d parallel chunks",
+                os.path.basename(file_path), size / (1024 * 1024), actual_n,
+            )
+            return True
+    except Exception as assemble_err:
+        logger.warning("[chunk_dl] failed to assemble chunks: %s", assemble_err)
+
+    return False
 
 
 # ── Main download entrypoint ──────────────────────────────────────────────────
@@ -768,15 +767,16 @@ async def _download_with_fallback(
     media_type: str,
 ) -> tuple[str | None, str]:
     """
-    Download using configured API servers → fleet fallback → direct yt-dlp.
+    Download using configured API servers → complete fleet fallback → direct yt-dlp.
 
-    Fast path (new):
+    Fast path:
       1. Race ALL API servers simultaneously via /audio?id= (JSON) → direct CDN URL.
          Whichever responds first wins; the rest are cancelled immediately.
       2. Download from that CDN URL using N parallel byte-range chunks.
-      3. If parallel chunks fail, sequential stream via /play/audio proxy (old behavior).
+      3. If parallel chunks fail, stream directly from that CDN URL.
+      4. If CDN URL fails, sequential stream via /play/audio proxy across fleet.
     Final fallback:
-      4. Direct yt-dlp download with 8 concurrent connections.
+      5. Direct yt-dlp download with mobile/TV client & IPv4 bypass.
 
     Returns (file_path, downloader_name)
     """
@@ -803,19 +803,31 @@ async def _download_with_fallback(
             if entry not in api_servers:
                 api_servers.append(entry)
 
+    # ⚡ Complete fleet fallback so no single API failure can kill playback
+    FLEET_FALLBACKS = [
+        ("https://publicapi-v3-d949abed7191.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+        ("https://apikey-v3-1854882f97a1.herokuapp.com",    "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+        ("https://apihub-v3-9d48fbce0605.herokuapp.com",    "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+        ("https://noah-api-v3-12d3419875af.herokuapp.com",  "Noah-LrTinhpR67h7C_HoCGykI9wHARDRJPJVz3TwBSq6wd4"),
+        ("https://panda-api-v3-6e9434966ef9.herokuapp.com", "panda_qpyudLY8bF8rFt69yK-fbLU5wQSO1nHK9H4GixjYNTY"),
+        ("https://titanic-api-v3-01462a8481af.herokuapp.com","titanic_lhQkzaBhIQTwpquq_XBIfBI52wtN49fhdTOBBBkfLNo"),
+    ]
+    for entry in FLEET_FALLBACKS:
+        if entry not in api_servers:
+            api_servers.append(entry)
+
     if api_servers:
         session = _get_http_session()
         json_ep  = "video" if media_type == "video" else "audio"
         proxy_eps = ["play/video/hq", "play/video"] if media_type == "video" else ["play/audio"]
 
         # ── Step 1: Race all APIs simultaneously for a direct CDN URL ─────────
-        async def _get_cdn_url(base_url: str, api_key: str) -> str | None:
-            """Try /audio (JSON) first — avoids Heroku proxy & H12 timeout."""
+        async def _get_cdn_url(base_url: str, api_key: str) -> tuple[str | None, int]:
+            """Try /audio (JSON) first — extracts direct googlevideo CDN URL + size."""
             hdrs = {
                 "X-API-Key": api_key,
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             }
-            # Primary: /audio?id= → JSON with googlevideo CDN URL
             try:
                 async with session.get(
                     f"{base_url}/{json_ep}?id={video_id}",
@@ -830,13 +842,27 @@ async def _download_with_fallback(
                             or data.get("video")
                             or {}
                         )
-                        cdn = media_data.get("url") or media_data.get("direct_url")
+                        cdn = (
+                            media_data.get("url")
+                            or media_data.get("direct_url")
+                            or (media_data.get("best_audio") or {}).get("url")
+                            or (media_data.get("best_video") or {}).get("url")
+                            or ((media_data.get("audio_streams") or [{}])[0]).get("url")
+                            or ((media_data.get("video_streams") or [{}])[0]).get("url")
+                        )
+                        fsize = int(
+                            media_data.get("filesize")
+                            or (media_data.get("best_audio") or {}).get("filesize")
+                            or (media_data.get("best_video") or {}).get("filesize")
+                            or 0
+                        )
                         if cdn:
-                            logger.info("[race] ✓ %s → CDN URL (/%s)", base_url, json_ep)
-                            return cdn
+                            logger.info("[race] ✓ %s → CDN URL (/%s, size=%d)", base_url, json_ep, fsize)
+                            return cdn, fsize
             except Exception:
                 pass
-            # Fallback: /play/audio proxy → capture final URL after redirect
+
+            # Fallback: /play/audio proxy → capture final URL if redirect
             for ep in proxy_eps:
                 try:
                     async with session.get(
@@ -845,20 +871,22 @@ async def _download_with_fallback(
                         timeout=aiohttp.ClientTimeout(connect=5, total=30),
                         allow_redirects=True,
                     ) as r:
-                        if r.status == 200:
-                            logger.info("[race] ✓ %s → proxy URL (/%s)", base_url, ep)
-                            return str(r.url)
+                        if r.status == 200 and "googlevideo.com" in str(r.url):
+                            logger.info("[race] ✓ %s → proxy redirect URL (/%s)", base_url, ep)
+                            return str(r.url), 0
                 except Exception:
                     pass
-            return None
+            return None, 0
 
         tasks = [asyncio.create_task(_get_cdn_url(u, k)) for u, k in api_servers]
         cdn_url: str | None = None
+        cdn_size: int = 0
         try:
             for coro in asyncio.as_completed(tasks):
-                result = await coro
-                if result:
-                    cdn_url = result
+                res_url, res_size = await coro
+                if res_url:
+                    cdn_url = res_url
+                    cdn_size = res_size
                     for t in tasks:
                         if not t.done():
                             t.cancel()
@@ -870,14 +898,33 @@ async def _download_with_fallback(
                 if not t.done():
                     t.cancel()
 
-        # ── Step 2: Download from CDN with parallel chunks ─────────────────────
+        # ── Step 2: Download from direct CDN URL ──────────────────────────────
         if cdn_url:
-            ok = await _parallel_chunk_download(cdn_url, file_path, media_type)
-            if ok:
+            # 2a: Try 16-chunk parallel download
+            ok = await _parallel_chunk_download(cdn_url, file_path, media_type, known_length=cdn_size)
+            # 2b: If chunks failed, download sequentially from direct CDN URL
+            if not ok:
+                try:
+                    async with session.get(
+                        cdn_url,
+                        timeout=aiohttp.ClientTimeout(total=180),
+                        allow_redirects=True,
+                    ) as r:
+                        if r.status == 200:
+                            with open(file_path, "wb") as fobj:
+                                async for chunk in r.content.iter_chunked(1024 * 1024):
+                                    fobj.write(chunk)
+                            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                ok = True
+                                logger.info("[cdn_stream] ✓ %s → %s via direct CDN stream", video_id, file_path)
+                except Exception as stream_err:
+                    logger.warning("[cdn_stream] direct stream failed for %s: %s", video_id, stream_err)
+
+            if ok and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                 _evict_disk_cache()
                 return file_path, "railway"
 
-        # ── Step 3: Sequential proxy stream fallback (old behaviour) ───────────
+        # ── Step 3: Sequential proxy stream fallback across fleet ──────────────
         proxy_ep = proxy_eps[0]
         for base_url, api_key in api_servers:
             media_url = f"{base_url}/{proxy_ep}?id={video_id}"
@@ -889,7 +936,7 @@ async def _download_with_fallback(
                 async with session.get(
                     media_url,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=35),
+                    timeout=aiohttp.ClientTimeout(total=40),
                     allow_redirects=True,
                 ) as resp:
                     if resp.status == 200:

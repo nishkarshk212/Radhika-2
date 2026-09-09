@@ -145,5 +145,6 @@
     "help_6": "Queue",
     "help_7": "Stats",
     "help_8": "Sudoers",
-    "usage_title": "<emoji id=5960842268096073715>📌</emoji> <u><b>Bot Usage Guide</b></u>\n\nChoose a section below to learn how to use this bot:"
+    "usage_title": "<emoji id=5960842268096073715>📌</emoji> <u><b>Bot Usage Guide</b></u>\n\nChoose a section below to learn how to use this bot:",
+    "playlist_fetch": "Fetching playlist...\n\nPlease wait."
 }
