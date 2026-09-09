@@ -198,7 +198,11 @@ class Utilities:
            source_label = "video" if video else "audio"
            err_reason = html.escape(str(error)[:800]) if error else "Unknown error"
            song_title = html.escape(str(title or "—"))
-           tb_text = html.escape(traceback.format_exc()[-1200:])
+           _tb_raw = traceback.format_exc()[-1200:]
+            if not _tb_raw.strip() or "NoneType: None" in _tb_raw:
+                tb_text = ""
+            else:
+                tb_text = "\n<pre>" + html.escape(_tb_raw) + "</pre>"
 
            header = (
                "<blockquote><b>"
@@ -208,7 +212,7 @@ class Utilities:
                f" s σ ᴜ ɴ ɢ : {song_title}\n"
                " s ʏ s ᴛ є ϻ n є є ᴅ s ϻ ᴧ ɪ n ᴛ є n ᴧ n c є ʙ σ s s . . .</b></blockquote>"
            )
-           detail = header + "\n<pre>" + tb_text + "</pre>"
+           detail = header + tb_text
            try:
                await app.send_message(
                    chat_id=(app.logger or chat_id or 0),
