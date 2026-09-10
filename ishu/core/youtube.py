@@ -221,90 +221,62 @@ async def _innertube_search(query: str, limit: int = 10) -> list:
         return []
 
 
-async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | None:
-    """
-    Race multiple API servers simultaneously: use whichever responds first.
-    Prefers /audio (JSON CDN URL, no Heroku proxy) over /play/audio (streaming proxy).
-    Returns a direct HTTP stream URL (not a local file path).
-    """
-    # Check prefetch cache first — instant hit!
-    if video_id in _PREFETCH_CACHE and _PREFETCH_CACHE[video_id]:
-        logger.info("[prefetch] ⚡ Instant cache hit for %s", video_id)
-        return _PREFETCH_CACHE[video_id]
-
-    api_servers = []
+def _get_single_api_endpoint() -> tuple[str | None, str | None]:
+    """Return the single configured API URL and Key for this bot."""
     for url_var, key_var in [
-        ("RAILWAY_YT_API_URL",  "RAILWAY_YT_API_KEY"),
-        ("LILY_API_URL",        "LILY_API_KEY"),
-        ("YOUTUBE_API_URL",     "YOUTUBE_API_KEY"),
-        ("YT_API_URL",          "YT_API_KEY"),
-        ("PANDA_API_URL",       "PANDA_API_KEY"),
+        ("RAILWAY_YT_API_URL", "RAILWAY_YT_API_KEY"),
+        ("LILY_API_URL",       "LILY_API_KEY"),
+        ("YOUTUBE_API_URL",    "YOUTUBE_API_KEY"),
+        ("YT_API_URL",         "YT_API_KEY"),
+        ("PANDA_API_URL",      "PANDA_API_KEY"),
     ]:
         url = getattr(config, url_var, None) or os.environ.get(url_var)
         key = getattr(config, key_var, None) or os.environ.get(key_var)
         if url and key:
-            entry = (url.rstrip("/"), key)
-            if entry not in api_servers:
-                api_servers.append(entry)
+            return url.rstrip("/"), str(key)
+    return None, None
 
-    if not api_servers:
+async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | None:
+    """
+    Direct single-API stream resolver (No fallback APIs, No Chunks API).
+    Returns direct CDN URL or API proxy stream URL.
+    """
+    if video_id in _PREFETCH_CACHE and _PREFETCH_CACHE[video_id]:
+        return _PREFETCH_CACHE[video_id]
+
+    base_url, api_key = _get_single_api_endpoint()
+    if not base_url or not api_key:
         return None
 
-    # Primary: /audio or /video endpoint returns JSON with direct CDN URL — no Heroku proxy overhead
-    json_ep    = "video" if media_type == "video" else "audio"
-    proxy_ep   = "play/video/hq" if media_type == "video" else "play/audio"
+    json_ep = "video" if media_type == "video" else "audio"
+    proxy_ep = "play/video/hq" if media_type == "video" else "play/audio"
+    session = _get_http_session()
+    hdrs = {
+        "X-API-Key": api_key,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
 
-    async def _probe(base_url: str, api_key: str) -> str | None:
-        session = _get_http_session()
-        hdrs = {"X-API-Key": api_key}
-        # ── Fast path: /audio?id= → JSON with direct googlevideo CDN URL ─────
-        try:
-            async with session.get(
-                f"{base_url}/{json_ep}?id={video_id}",
-                headers=hdrs,
-                timeout=aiohttp.ClientTimeout(connect=4, total=20),
-            ) as r:
-                if r.status == 200:
-                    data = await r.json(content_type=None)
-                    media_data = data.get(json_ep) or data.get("stream") or data.get("video") or {}
-                    cdn = media_data.get("url") or media_data.get("direct_url")
-                    if cdn:
-                        logger.info("[race] ✓ %s won for %s (CDN URL)", base_url, video_id)
-                        return cdn
-        except Exception:
-            pass
-        # ── Fallback: /play/audio proxy stream ────────────────────────────────
-        try:
-            async with session.get(
-                f"{base_url}/{proxy_ep}?id={video_id}",
-                headers=hdrs,
-                timeout=aiohttp.ClientTimeout(connect=4, total=25),
-                allow_redirects=True,
-            ) as resp:
-                if resp.status == 200:
-                    logger.info("[race] ✓ %s won for %s (proxy URL)", base_url, video_id)
-                    return str(resp.url)
-        except Exception:
-            pass
-        return None
-
-    tasks = [asyncio.create_task(_probe(url, key)) for url, key in api_servers]
     try:
-        for coro in asyncio.as_completed(tasks):
-            result = await coro
-            if result:
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                return result
+        async with session.get(
+            f"{base_url}/{json_ep}?id={video_id}",
+            headers=hdrs,
+            timeout=aiohttp.ClientTimeout(connect=4, total=20),
+        ) as r:
+            if r.status == 200:
+                data = await r.json(content_type=None)
+                media_data = data.get(json_ep) or data.get("stream") or data.get("video") or {}
+                cdn = (
+                    media_data.get("url")
+                    or media_data.get("direct_url")
+                    or (media_data.get("best_audio") or {}).get("url")
+                    or (media_data.get("best_video") or {}).get("url")
+                )
+                if cdn:
+                    return cdn
     except Exception:
         pass
-    finally:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-    return None
 
+    return f"{base_url}/{proxy_ep}?id={video_id}&api_key={api_key}"
 
 def prefetch_next(video_id: str, media_type: str = "audio") -> None:
     """
@@ -658,12 +630,14 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
 
 
 # ── Main download entrypoint ──────────────────────────────────────────────────
+# ── Main download entrypoint (Strictly Single API + direct yt-dlp fallback) ───
 async def _download_with_fallback(
     link: str,
     media_type: str,
 ) -> tuple[str | None, str]:
     """
-    Download using configured API servers -> fleet fallback API servers -> direct yt-dlp fallback.
+    Strictly single API per bot.
+    No Chunks API. No Fallback APIs.
     Returns (file_path, downloader_name)
     """
     video_id = _extract_video_id(link) or link
@@ -674,37 +648,10 @@ async def _download_with_fallback(
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path, "cache"
 
-    api_servers = []
-    for url_var, key_var in [
-        ("RAILWAY_YT_API_URL",  "RAILWAY_YT_API_KEY"),
-        ("LILY_API_URL",        "LILY_API_KEY"),
-        ("YOUTUBE_API_URL",     "YOUTUBE_API_KEY"),
-        ("YT_API_URL",          "YT_API_KEY"),
-        ("PANDA_API_URL",       "PANDA_API_KEY"),
-    ]:
-        url = getattr(config, url_var, None) or os.environ.get(url_var)
-        key = getattr(config, key_var, None) or os.environ.get(key_var)
-        if url and key:
-            entry = (url.rstrip("/"), key)
-            if entry not in api_servers:
-                api_servers.append(entry)
-
-    FLEET_FALLBACK_APIS = [
-        ("https://titanic-api-v3-01462a8481af.herokuapp.com", "titanic_lhQkzaBhIQTwpquq_XBIfBI52wtN49fhdTOBBBkfLNo"),
-        ("https://panda-api-v3-6e9434966ef9.herokuapp.com", "panda_qpyudLY8bF8rFt69yK-fbLU5wQSO1nHK9H4GixjYNTY"),
-        ("https://noah-api-v3-12d3419875af.herokuapp.com", "Noah-LrTinhpR67h7C_HoCGykI9wHARDRJPJVz3TwBSq6wd4"),
-        ("https://publicapi-v3-d949abed7191.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-        ("https://apihub-v3-9d48fbce0605.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-        ("https://apikey-v3-1854882f97a1.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
-    ]
-    for entry in FLEET_FALLBACK_APIS:
-        if entry not in api_servers:
-            api_servers.append(entry)
-
-    endpoint = "play/video/hq" if media_type == "video" else "play/audio"
-    session = _get_http_session()
-
-    for base_url, api_key in api_servers:
+    base_url, api_key = _get_single_api_endpoint()
+    if base_url and api_key:
+        endpoint = "play/video/hq" if media_type == "video" else "play/audio"
+        session = _get_http_session()
         media_url = f"{base_url}/{endpoint}?id={video_id}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -714,7 +661,7 @@ async def _download_with_fallback(
             async with session.get(
                 media_url,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(connect=5, total=18),
+                timeout=aiohttp.ClientTimeout(connect=5, total=35),
                 allow_redirects=True,
             ) as resp:
                 if resp.status == 200:
@@ -723,24 +670,24 @@ async def _download_with_fallback(
                             f.write(chunk)
                     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                         _evict_disk_cache()
-                        logger.info("Railway YT API ✓ %s via %s", video_id, base_url)
-                        return file_path, "railway"
+                        logger.info("Single API ✓ %s via %s", video_id, base_url)
+                        return file_path, "api"
                 else:
-                    logger.warning("Railway YT API status %s from %s for %s", resp.status, base_url, video_id)
+                    logger.warning("Single API status %s from %s for %s", resp.status, base_url, video_id)
         except Exception as e:
-            logger.warning("Railway YT API download from %s failed for %s: %s", base_url, video_id, e)
+            logger.warning("Single API download from %s failed for %s: %s", base_url, video_id, e)
 
-    # ── Fallback: Direct yt-dlp download ──
-    logger.warning("All API servers failed for %s. Attempting direct yt-dlp fallback...", video_id)
+    # Fallback: Direct yt-dlp download locally on dyno
+    logger.warning("Assigned API failed for %s. Attempting direct yt-dlp fallback...", video_id)
     direct_res = await _direct_ytdlp_download(video_id, media_type)
     if direct_res:
         logger.info("Direct yt-dlp fallback succeeded for %s: %s", video_id, direct_res)
         return direct_res, "yt-dlp"
 
-    logger.error("Download failed for: %s via all methods (APIs + direct yt-dlp)", video_id)
+    logger.error("Download failed for %s via assigned API and direct yt-dlp", video_id)
     await _notify_download_failure(video_id, media_type)
     return None, "none"
-# ── Public helpers (kept for backward compat with play.py / calls.py) ─────────
+
 async def download_song(link: str, title: str | None = None) -> str | None:
     path, _ = await _download_with_fallback(link, "audio")
     return path
