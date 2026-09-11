@@ -260,7 +260,7 @@ async def _race_api_stream(video_id: str, media_type: str = "audio") -> str | No
         async with session.get(
             f"{base_url}/{json_ep}?id={video_id}",
             headers=hdrs,
-            timeout=aiohttp.ClientTimeout(connect=4, total=20),
+            timeout=aiohttp.ClientTimeout(connect=10, total=50),
         ) as r:
             if r.status == 200:
                 data = await r.json(content_type=None)
@@ -629,15 +629,23 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
     return None
 
 
-# ── Main download entrypoint ──────────────────────────────────────────────────
-# ── Main download entrypoint (Strictly Single API + direct yt-dlp fallback) ───
+# ── Main download entrypoint (Assigned API + Fleet Fallbacks, No Time Limit) ───
+FLEET_FALLBACK_APIS = [
+    ("https://titanic-api-v3-01462a8481af.herokuapp.com", "titanic_lhQkzaBhIQTwpquq_XBIfBI52wtN49fhdTOBBBkfLNo"),
+    ("https://publicapi-v3-d949abed7191.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+    ("https://apihub-v3-9d48fbce0605.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+    ("https://apikey-v3-1854882f97a1.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+    ("https://panda-api-v3-6e9434966ef9.herokuapp.com", "panda_qpyudLY8bF8rFt69yK-fbLU5wQSO1nHK9H4GixjYNTY"),
+    ("https://noah-api-v3-12d3419875af.herokuapp.com", "Noah-LrTin3b3L8x5mZ3K5zI42W1q6wd4"),
+]
+
 async def _download_with_fallback(
     link: str,
     media_type: str,
 ) -> tuple[str | None, str]:
     """
-    Strictly single API per bot.
-    No Chunks API. No Fallback APIs.
+    Download song/video via assigned API with fleet fallbacks.
+    No total time limit — streams until fully downloaded.
     Returns (file_path, downloader_name)
     """
     video_id = _extract_video_id(link) or link
@@ -648,20 +656,30 @@ async def _download_with_fallback(
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path, "cache"
 
+    endpoint = "play/video/hq" if media_type == "video" else "play/audio"
+    session = _get_http_session()
+
+    apis_to_try: list[tuple[str, str]] = []
     base_url, api_key = _get_single_api_endpoint()
     if base_url and api_key:
-        endpoint = "play/video/hq" if media_type == "video" else "play/audio"
-        session = _get_http_session()
-        media_url = f"{base_url}/{endpoint}?id={video_id}"
+        apis_to_try.append((base_url, api_key))
+
+    for fb_url, fb_key in FLEET_FALLBACK_APIS:
+        if (fb_url, fb_key) not in apis_to_try:
+            apis_to_try.append((fb_url, fb_key))
+
+    for api_url, key in apis_to_try[:3]:
+        media_url = f"{api_url}/{endpoint}?id={video_id}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-API-Key": str(api_key),
+            "X-API-Key": str(key),
         }
         try:
+            timeout = aiohttp.ClientTimeout(connect=15, sock_read=60, total=None)
             async with session.get(
                 media_url,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(connect=5, total=35),
+                timeout=timeout,
                 allow_redirects=True,
             ) as resp:
                 if resp.status == 200:
@@ -670,15 +688,21 @@ async def _download_with_fallback(
                             f.write(chunk)
                     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                         _evict_disk_cache()
-                        logger.info("Single API ✓ %s via %s", video_id, base_url)
+                        logger.info("API download ✓ %s via %s (%d bytes)", video_id, api_url, os.path.getsize(file_path))
                         return file_path, "api"
                 else:
-                    logger.warning("Single API status %s from %s for %s", resp.status, base_url, video_id)
+                    logger.warning("API download status %s from %s for %s", resp.status, api_url, video_id)
         except Exception as e:
-            logger.warning("Single API download from %s failed for %s: %s", base_url, video_id, e)
+            logger.warning("API download from %s failed for %s: %s", api_url, video_id, e)
+        finally:
+            if os.path.exists(file_path) and os.path.getsize(file_path) == 0:
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
 
     # Fallback: Direct yt-dlp download locally on dyno
-    logger.warning("Assigned API failed for %s. Attempting direct yt-dlp fallback...", video_id)
+    logger.warning("Assigned and fallback APIs failed for %s. Attempting direct yt-dlp fallback...", video_id)
     direct_res = await _direct_ytdlp_download(video_id, media_type)
     if direct_res:
         logger.info("Direct yt-dlp fallback succeeded for %s: %s", video_id, direct_res)
