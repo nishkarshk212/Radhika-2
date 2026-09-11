@@ -403,7 +403,7 @@ def _resolve_downloaded_file(video_id: str, ext: str) -> str | None:
 # The default runtime is 'deno', but it is unreliable in containers; Node >= 23.5
 # is the dependable choice. If no working runtime is available every request
 # fails with "Sign in to confirm you're not a bot". Force the 'node' runtime.
-JS_RUNTIMES = {"quickjs": {}}  # node 20.x unsupported by yt-dlp; quickjs always available
+JS_RUNTIMES = {"node": {}}
 
 # YouTube's "Sign in to confirm you're not a bot" check is applied per player
 # client. The default 'web' client is the most aggressively gated; the mobile
@@ -411,7 +411,7 @@ JS_RUNTIMES = {"quickjs": {}}  # node 20.x unsupported by yt-dlp; quickjs always
 # bypass it entirely — no cookies or proxy needed. yt-dlp tries these in order
 # and uses the first that returns a playable response. Override with the
 # YT_PLAYER_CLIENTS env var (comma-separated) if YouTube shifts its gating.
-_DEFAULT_PLAYER_CLIENTS = "mweb,android,ios"  # Best clients for datacenter IPs with quickjs
+_DEFAULT_PLAYER_CLIENTS = "tv,ios,android,web_safari,mweb,web"
 
 
 def _with_js_runtime(opts: dict) -> dict:
@@ -545,9 +545,7 @@ async def _railway_download(video_id: str, media_type: str) -> str | None:
 
 
 async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
-    """Direct yt-dlp download using quickjs (always available) + cookies from env.
-    Uses mweb/android clients which work reliably on datacenter IPs with quickjs.
-    No cookie-retry loop — if it fails, it fails fast and cleanly."""
+    """Fast direct yt-dlp fallback with mobile/TV client bypassing datacenter bot checks."""
     import sys
     ext = "mp4" if media_type == "video" else "mp3"
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
@@ -558,16 +556,23 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
         sys.executable,
         "-m",
         "yt_dlp",
-        "--js-runtimes", "quickjs",          # quickjs is always available; node 20.x is unsupported
-        "--extractor-args", "youtube:player_client=mweb,android,ios",
-        "-N", "4",
-        "--buffer-size", "1M",
-        "--http-chunk-size", "10M",
+        "--js-runtimes",
+        "node",
+        "--extractor-args",
+        "youtube:player_client=android,ios,tv,mweb",
+        "-N",
+        "4",
+        "--buffer-size",
+        "1M",
+        "--http-chunk-size",
+        "10M",
         "--no-playlist",
         "--no-warnings",
         "-q",
-        "--socket-timeout", "30",
-        "--retries", "2",
+        "--socket-timeout",
+        "30",
+        "--retries",
+        "2",
     ]
 
     cookie = cookie_txt_file() if "cookie_txt_file" in globals() else None
@@ -595,29 +600,52 @@ async def _direct_ytdlp_download(video_id: str, media_type: str) -> str | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
         resolved = _resolve_downloaded_file(video_id, ext)
         if resolved:
             _evict_disk_cache()
             return resolved
-        logger.warning("Direct yt-dlp returned no file for %s: %s", video_id, stderr.decode(errors="ignore"))
+        logger.warning("Direct yt-dlp download returned no file for %s: %s", video_id, stderr.decode(errors="ignore"))
     except Exception as e:
-        logger.warning("Direct yt-dlp failed for %s: %s", video_id, e)
+        logger.warning("Direct yt-dlp download failed for %s: %s", video_id, e)
+
+    # If first attempt failed with cookie, retry ONCE without cookie (cookies often trigger bot-detection on datacenter IPs)
+    if cookie and os.path.exists(cookie):
+        try:
+            cmd_nocookie = [arg for arg in cmd if arg != "--cookies" and arg != cookie]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_nocookie,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+            resolved = _resolve_downloaded_file(video_id, ext)
+            if resolved:
+                _evict_disk_cache()
+                return resolved
+        except Exception as e2:
+            logger.warning("Direct yt-dlp download (no-cookie retry) failed for %s: %s", video_id, e2)
 
     return None
 
 
-# Fleet fallback removed — bots use only their assigned API + direct yt-dlp.
-# This avoids cross-bot API quota exhaustion and unpredictable latency spikes.
-FLEET_FALLBACK_APIS: list = []
+# ── Main download entrypoint (Assigned API + Fleet Fallbacks, No Time Limit) ───
+FLEET_FALLBACK_APIS = [
+    ("https://titanic-api-v3-01462a8481af.herokuapp.com", "titanic_lhQkzaBhIQTwpquq_XBIfBI52wtN49fhdTOBBBkfLNo"),
+    ("https://publicapi-v3-d949abed7191.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+    ("https://apihub-v3-9d48fbce0605.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+    ("https://apikey-v3-1854882f97a1.herokuapp.com", "lily_mOVOd9TG7zuE4L9QDxEndbiyjQc9he"),
+    ("https://panda-api-v3-6e9434966ef9.herokuapp.com", "panda_qpyudLY8bF8rFt69yK-fbLU5wQSO1nHK9H4GixjYNTY"),
+    ("https://noah-api-v3-12d3419875af.herokuapp.com", "Noah-LrTin3b3L8x5mZ3K5zI42W1q6wd4"),
+]
 
 async def _download_with_fallback(
     link: str,
     media_type: str,
 ) -> tuple[str | None, str]:
     """
-    Download song/video via ONLY the bot's assigned API, then direct yt-dlp.
-    No fleet fallbacks — each bot is self-contained.
+    Download song/video via assigned API with fleet fallbacks.
+    No total time limit — streams until fully downloaded.
     Returns (file_path, downloader_name)
     """
     video_id = _extract_video_id(link) or link
@@ -631,15 +659,23 @@ async def _download_with_fallback(
     endpoint = "play/video/hq" if media_type == "video" else "play/audio"
     session = _get_http_session()
 
+    apis_to_try: list[tuple[str, str]] = []
     base_url, api_key = _get_single_api_endpoint()
     if base_url and api_key:
-        media_url = f"{base_url}/{endpoint}?id={video_id}"
+        apis_to_try.append((base_url, api_key))
+
+    for fb_url, fb_key in FLEET_FALLBACK_APIS:
+        if (fb_url, fb_key) not in apis_to_try:
+            apis_to_try.append((fb_url, fb_key))
+
+    for api_url, key in apis_to_try[:3]:
+        media_url = f"{api_url}/{endpoint}?id={video_id}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-API-Key": str(api_key),
+            "X-API-Key": str(key),
         }
         try:
-            timeout = aiohttp.ClientTimeout(connect=15, sock_read=120, total=None)
+            timeout = aiohttp.ClientTimeout(connect=15, sock_read=60, total=None)
             async with session.get(
                 media_url,
                 headers=headers,
@@ -652,12 +688,12 @@ async def _download_with_fallback(
                             f.write(chunk)
                     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                         _evict_disk_cache()
-                        logger.info("API download ✓ %s via %s (%d bytes)", video_id, base_url, os.path.getsize(file_path))
+                        logger.info("API download ✓ %s via %s (%d bytes)", video_id, api_url, os.path.getsize(file_path))
                         return file_path, "api"
                 else:
-                    logger.warning("API download status %s from %s for %s", resp.status, base_url, video_id)
+                    logger.warning("API download status %s from %s for %s", resp.status, api_url, video_id)
         except Exception as e:
-            logger.warning("API download from %s failed for %s: %s", base_url, video_id, e)
+            logger.warning("API download from %s failed for %s: %s", api_url, video_id, e)
         finally:
             if os.path.exists(file_path) and os.path.getsize(file_path) == 0:
                 try:
@@ -665,11 +701,11 @@ async def _download_with_fallback(
                 except OSError:
                     pass
 
-    # Direct yt-dlp download on dyno (quickjs, cookies from env)
-    logger.warning("Assigned API failed/unavailable for %s. Attempting direct yt-dlp...", video_id)
+    # Fallback: Direct yt-dlp download locally on dyno
+    logger.warning("Assigned and fallback APIs failed for %s. Attempting direct yt-dlp fallback...", video_id)
     direct_res = await _direct_ytdlp_download(video_id, media_type)
     if direct_res:
-        logger.info("Direct yt-dlp succeeded for %s: %s", video_id, direct_res)
+        logger.info("Direct yt-dlp fallback succeeded for %s: %s", video_id, direct_res)
         return direct_res, "yt-dlp"
 
     logger.error("Download failed for %s via assigned API and direct yt-dlp", video_id)
