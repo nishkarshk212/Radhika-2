@@ -321,8 +321,8 @@ def cookie_txt_file() -> str | None:
 
     Priority:
     1. Already resolved & cached (_COOKIE_PATH set).
-    2. Physical file at ishu/cookies/cookie_0.txt (written by COOKIES_URL loader).
-    3. Decoded from YTDLP_COOKIES_BASE64 env var (base64 Netscape cookie string).
+    2. Decoded from YTDLP_COOKIES_BASE64 / YOUTUBE_COOKIES_BASE64 env var (immediate config-var updates).
+    3. Physical file at ishu/cookies/cookie_0.txt.
     4. Raw text from COOKIES_DATA env var.
     """
     global _COOKIE_PATH
@@ -333,12 +333,7 @@ def cookie_txt_file() -> str | None:
     folder = os.path.abspath(os.path.join(base_dir, "..", "cookies"))
     primary = os.path.join(folder, "cookie_0.txt")
 
-    # 1. Physical file already present (e.g. written by save_cookies / COOKIES_URL)
-    if os.path.exists(primary) and os.path.getsize(primary) > 0:
-        _COOKIE_PATH = primary
-        return primary
-
-    # 2. Decode from YTDLP_COOKIES_BASE64 env var (set on Heroku by the deploy script)
+    # 1. Decode from YTDLP_COOKIES_BASE64 env var (takes precedence for config-var updates)
     b64 = os.environ.get("YTDLP_COOKIES_BASE64") or os.environ.get("YOUTUBE_COOKIES_BASE64") or os.environ.get("COOKIES_BASE64")
     if b64:
         try:
@@ -350,11 +345,15 @@ def cookie_txt_file() -> str | None:
             os.makedirs(folder, exist_ok=True)
             with open(primary, "w", encoding="utf-8") as f:
                 f.write(decoded)
-            logger.info("cookie_txt_file: decoded YTDLP_COOKIES_BASE64 → %s", primary)
             _COOKIE_PATH = primary
             return primary
         except Exception as e:
             logger.warning("cookie_txt_file: failed to decode base64 cookies: %s", e)
+
+    # 2. Physical file already present
+    if os.path.exists(primary) and os.path.getsize(primary) > 0:
+        _COOKIE_PATH = primary
+        return primary
 
     # 3. Raw Netscape cookie text from COOKIES_DATA env var
     raw_data = os.environ.get("COOKIES_DATA", "").strip()
@@ -363,7 +362,6 @@ def cookie_txt_file() -> str | None:
             os.makedirs(folder, exist_ok=True)
             with open(primary, "w", encoding="utf-8") as f:
                 f.write(raw_data)
-            logger.info("cookie_txt_file: wrote COOKIES_DATA → %s", primary)
             _COOKIE_PATH = primary
             return primary
         except Exception as e:
@@ -376,8 +374,6 @@ def cookie_txt_file() -> str | None:
         txt_files = []
     _COOKIE_PATH = txt_files[0] if txt_files else None
     return _COOKIE_PATH
-
-
 def _resolve_downloaded_file(video_id: str, ext: str) -> str | None:
     """
     Find the actual file produced by yt-dlp for `video_id`.

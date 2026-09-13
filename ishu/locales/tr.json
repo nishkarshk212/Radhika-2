@@ -25,7 +25,7 @@
     "dl_progress": "<u><b>Dosya indiriliyor</b></u>\n\n<b>İlerleme:</b> {0} / {1} [{2:.1f}%]\n<b>Hız:</b> {3}/s | <b>Kalan Süre:</b> {4}",
     "dl_not_found": "İndirme işlemi zaten iptal edilmiş.",
     "error_no_audio": "Sonraki parçaya geçiliyor...\n\nDosyada ses kaynağı bulunamadı.",
-    "error_no_call": "<b>Aktif bir görüntülü sohbet bulunamadı.</b>\n\nLütfen bir tane başlatın ve <b>tekrar deneyin</b>.",
+    "error_no_call": "ʙᴀʙᴜ ᴛᴀɴɪ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴄʜᴀʟᴜ ᴋᴀʀ",
     "error_no_file": "İndirme başarısız oldu.\n\nSorun devam ederse, <a href={0}>destek sohbetine</a> bildirin.",
     "error_tg_server": "<u><b>Telegram sunucu hatası</b></u>\n\nTelegram iç sorunlar yaşıyor. Sıra temizleniyor ve görüntülü sohbetten ayrılıyorum.",
     "error_rtmp": "RTMP yayını desteklenmiyor. Lütfen RTMP yayınını durdurun ve yerine bir görüntülü sohbet başlatın.",

@@ -235,7 +235,16 @@ class TgCall(PyTgCalls):
                 stream_success = True
 
             except Exception as e:
-                err_detail = str(e).strip() or "PyTgCalls HTTP probe timeout"
+                err_str = str(e)
+                if any(err in err_str for err in ["GROUPCALL_INVALID", "GroupCallNotFound", "CHANNEL_INVALID", "ChannelInvalid", "NoActiveGroupCall"]):
+                    logger.info("Voice chat closed/invalid/assistant not in chat %s for %s", chat_id, getattr(media, "id", "?"))
+                    await message.edit_text("ʙᴀʙᴜ ᴛᴀɴɪ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴄʜᴀʟᴜ ᴋᴀʀ")
+                    if hasattr(self, "stop_stream"):
+                        await self.stop_stream(chat_id)
+                    elif hasattr(self, "stop"):
+                        await self.stop(chat_id)
+                    return
+                err_detail = err_str.strip() or "PyTgCalls HTTP probe timeout"
                 logger.info("Direct HTTP stream probe skipped for %s (%s) → Downloading file for smooth playback...", getattr(media, "id", "?"), err_detail)
                 stream_success = False
 
@@ -290,9 +299,9 @@ class TgCall(PyTgCalls):
                 )
         except Exception as e:
             err_str = str(e)
-            if any(err in err_str for err in ["GROUPCALL_INVALID", "GroupCallNotFound", "CHANNEL_INVALID", "ChannelInvalid"]):
+            if any(err in err_str for err in ["GROUPCALL_INVALID", "GroupCallNotFound", "CHANNEL_INVALID", "ChannelInvalid", "NoActiveGroupCall"]):
                 logger.info("Voice chat closed/invalid/assistant not in chat %s for %s", chat_id, getattr(media, "id", "?"))
-                await message.edit_text("❌ **No active Voice Chat found or Assistant is not in group.**\n\n`Please ensure Assistant is in group & Voice Chat is started!`")
+                await message.edit_text("ʙᴀʙᴜ ᴛᴀɴɪ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴄʜᴀʟᴜ ᴋᴀʀ")
                 await self.stop_stream(chat_id)
                 return
             logger.error("Final playback failed for %s: %s", getattr(media, "id", "?"), e)
