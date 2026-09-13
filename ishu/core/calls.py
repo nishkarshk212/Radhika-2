@@ -1,3 +1,4 @@
+from ishu.helpers._play import is_vc_active
 # Copyright (c) 2025 AnonymousX1025
 # Licensed under the MIT License.
 # This file is part of AnonXMusic
@@ -260,6 +261,13 @@ class TgCall(PyTgCalls):
             media_path = media.file_path
 
         if not media_path:
+            if not await is_vc_active(chat_id):
+                await message.edit_text("ʙᴀʙᴜ ᴛᴀɴɪ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴄʜᴀʟᴜ ᴋᴀʀ")
+                if hasattr(self, "stop_stream"):
+                    await self.stop_stream(chat_id)
+                elif hasattr(self, "stop"):
+                    await self.stop(chat_id)
+                return
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             if isinstance(media, Track):
                 await utils.error_log(
@@ -568,6 +576,9 @@ class TgCall(PyTgCalls):
 
 
     async def play_next(self, chat_id: int) -> None:
+        if not await is_vc_active(chat_id):
+            logger.info("Voice chat closed/ended for %s, stopping play_next cleanly.", chat_id)
+            return await self.stop(chat_id)
         if loop := await db.get_loop(chat_id):
             await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
@@ -664,10 +675,13 @@ class TgCall(PyTgCalls):
             if isinstance(update, types.StreamEnded):
                 await self.play_next(update.chat_id)
             elif isinstance(update, types.ChatUpdate):
-                if update.status in [
+                if update.status == types.ChatUpdate.Status.CLOSED_VOICE_CHAT:
+                    logger.info("Voice chat closed in chat %s. Stopping stream cleanly.", update.chat_id)
+                    await self.stop(update.chat_id)
+                    return
+                elif update.status in [
                     types.ChatUpdate.Status.KICKED,
                     types.ChatUpdate.Status.LEFT_GROUP,
-                    types.ChatUpdate.Status.CLOSED_VOICE_CHAT,
                 ]:
                     # A dead stream URL (expires ~6h) or a transient Telegram
                     # disconnect can end the call and would normally make the

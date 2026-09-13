@@ -11,6 +11,41 @@ from ishu import app, config, db, logger, queue, yt
 from ishu.helpers import utils
 
 
+from pyrogram.raw import functions, types as raw_types
+
+async def is_vc_active(chat_id: int) -> bool:
+    """Check if Telegram Voice Chat / Group Call is currently active in the chat."""
+    if chat_id in db.active_calls:
+        return True
+
+    # 1. Check via Bot client
+    try:
+        peer = await app.resolve_peer(chat_id)
+        if isinstance(peer, raw_types.InputPeerChannel):
+            full = await app.invoke(functions.channels.GetFullChannel(channel=peer))
+            return getattr(full.full_chat, "call", None) is not None
+        elif isinstance(peer, raw_types.InputPeerChat):
+            full = await app.invoke(functions.messages.GetFullChat(chat_id=peer.chat_id))
+            return getattr(full.full_chat, "call", None) is not None
+    except Exception as e:
+        logger.debug("app.invoke GetFullChannel check: %s", e)
+
+    # 2. Check via Assistant Userbot client
+    try:
+        client = await db.get_client(chat_id)
+        if client:
+            peer = await client.resolve_peer(chat_id)
+            if isinstance(peer, raw_types.InputPeerChannel):
+                full = await client.invoke(functions.channels.GetFullChannel(channel=peer))
+                return getattr(full.full_chat, "call", None) is not None
+            elif isinstance(peer, raw_types.InputPeerChat):
+                full = await client.invoke(functions.messages.GetFullChat(chat_id=peer.chat_id))
+                return getattr(full.full_chat, "call", None) is not None
+    except Exception as e:
+        logger.debug("client.invoke GetFullChannel check: %s", e)
+
+    return True
+
 def checkUB(play):
     async def wrapper(_, m: types.Message):
         if not m.from_user:
@@ -28,6 +63,11 @@ def checkUB(play):
 
         if len(queue.get_queue(chat_id)) >= config.QUEUE_LIMIT:
             return await m.reply_text(m.lang["play_queue_full"].format(config.QUEUE_LIMIT))
+
+        # ── Detect Voice Chat Active FIRST ─────────────────────────────────
+        if not await is_vc_active(chat_id):
+            return await m.reply_text("ʙᴀʙᴜ ᴛᴀɴɪ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴄʜᴀʟᴜ ᴋᴀʀ")
+
 
         force = m.command[0].endswith("force") or (
             len(m.command) > 1 and "-f" in m.command[1]
