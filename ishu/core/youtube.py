@@ -224,11 +224,14 @@ async def _innertube_search(query: str, limit: int = 10) -> list:
 def _get_single_api_endpoint() -> tuple[str | None, str | None]:
     """Return the single configured API URL and Key for this bot."""
     for url_var, key_var in [
+        ("FAST_API_URL",       "FAST_API_KEY"),
         ("RAILWAY_YT_API_URL", "RAILWAY_YT_API_KEY"),
         ("LILY_API_URL",       "LILY_API_KEY"),
         ("YOUTUBE_API_URL",    "YOUTUBE_API_KEY"),
         ("YT_API_URL",         "YT_API_KEY"),
         ("PANDA_API_URL",      "PANDA_API_KEY"),
+        ("NOAH_API_URL",       "NOAH_API_KEY"),
+        ("TITANIC_API_URL",    "TITANIC_API_KEY"),
     ]:
         url = getattr(config, url_var, None) or os.environ.get(url_var)
         key = getattr(config, key_var, None) or os.environ.get(key_var)
@@ -1179,6 +1182,26 @@ class YouTube:
             logger.warning("Cold YouTube.download error for '%s': %s", video_id, e)
             return None
 
+    async def get_stream_url(self, video_id: str, video: bool = False) -> str | None:
+        """
+        Direct stream URL resolver for zero-download voice chat playback.
+        Checks local disk cache first, then returns configured API proxy stream URL with API key.
+        """
+        ext = "mp4" if video else "webm"
+        local_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            return local_path
+
+        mp3_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
+        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+            return mp3_path
+
+        base_url, api_key = _get_single_api_endpoint()
+        if base_url and api_key:
+            proxy_ep = "play/video" if video else "play/audio"
+            return f"{base_url.rstrip('/')}/{proxy_ep}?id={video_id}&api_key={api_key}"
+        return None
+
     # ── Download (main method called by play.py / calls.py) ──────────────────
     async def download(
         self,
@@ -1188,10 +1211,17 @@ class YouTube:
         force_cold_file: bool = False,
     ) -> str | None:
         """
-        Download audio/video by video_id using ultra-fast HybridCacheManager.
-        Priority: Local SSD (50-300ms) -> Telegram Dump Backup (1-3s) -> Cold YT Download (5-20s).
-        Returns file path or None.
+        Download audio/video by video_id with Zero-Download voice chat streaming.
+        Priority:
+        1. If not force_cold_file: return direct API proxy stream URL (zero disk usage).
+        2. Local SSD cache -> Telegram Dump Backup -> Cold YT Download.
         """
+        if not force_cold_file:
+            stream_url = await self.get_stream_url(video_id, video=video)
+            if stream_url:
+                logger.info(f"Using direct API stream URL for voice chat: {video_id}")
+                return stream_url
+
         from ishu.core.cache_manager import cache_manager
         from ishu import db
 
