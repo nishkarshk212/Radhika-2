@@ -109,7 +109,6 @@ async def start(client, message: types.Message):
             caption=caption_text,
             parse_mode=enums.ParseMode.HTML,
             reply_markup=key,
-            quote=True,
             has_spoiler=True,
         )
         try:
