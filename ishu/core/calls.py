@@ -190,22 +190,93 @@ class TgCall(PyTgCalls):
             else config.DEFAULT_THUMB
         ) if config.THUMB_GEN else None
 
-        # ── Step 1: Resolve media path ─────────────────────────────────────────
-        # Prefer a locally cached file over the direct stream URL. Stream URLs
-        # (googlevideo.com) expire after ~6h, so once a track's file has been
-        # downloaded the local copy becomes the source of truth — this stops
-        # the call from dropping (and the assistant from leaving the GC) when an
-        # old URL silently dies mid-play.
+        # ── Step 1: Resolve media path — live-download then play ───────────────
+        # Avoid direct HTTP streaming to FFmpeg which causes audio breaks and silences.
+        # Instead, live-download to local file and start playback from the local file
+        # as soon as initial buffer (384 KB) is written. FFmpeg smoothly reads the local file.
         media_path = media.file_path
 
         if not media_path and isinstance(media, Track):
+            ext = "mp4" if media.video else "mp3"
+            for cand in [
+                os.path.join("downloads", f"{media.id}.{ext}"),
+                os.path.join("downloads", f"{media.id}.mp3"),
+                os.path.join("downloads", f"{media.id}.webm"),
+                os.path.join("downloads", f"{media.id}.m4a"),
+                os.path.join("downloads", f"{media.id}.mp4"),
+            ]:
+                if os.path.exists(cand) and os.path.getsize(cand) > 256 * 1024:
+                    media_path = cand
+                    media.file_path = cand
+                    logger.info("⚡ [LOCAL CACHE] Instant play from %s", cand)
+                    break
+
+        if not media_path and isinstance(media, Track):
             endpoint = "play/video" if media.video else "play/audio"
-            api_url = getattr(config, "RAILWAY_YT_API_URL", None) or getattr(config, "YOUTUBE_API_URL", None)
-            api_key = getattr(config, "RAILWAY_YT_API_KEY", None) or getattr(config, "YOUTUBE_API_KEY", None)
+            api_url = (
+                getattr(config, "FAST_API_URL", None)
+                or getattr(config, "RAILWAY_YT_API_URL", None)
+                or getattr(config, "LILY_API_URL", None)
+                or getattr(config, "YOUTUBE_API_URL", None)
+                or getattr(config, "YT_API_URL", None)
+            )
+            api_key = (
+                getattr(config, "FAST_API_KEY", None)
+                or getattr(config, "RAILWAY_YT_API_KEY", None)
+                or getattr(config, "LILY_API_KEY", None)
+                or getattr(config, "YOUTUBE_API_KEY", None)
+                or getattr(config, "YT_API_KEY", None)
+            )
             if api_url and api_key:
-                media_path = f"{api_url}/{endpoint}?id={media.id}&api_key={api_key}"
-                logger.info("⚡ [SUB-50MS FAST STREAM] Direct HTTP stream initiated for %s (%s) → %s", media.id, endpoint, api_url)
-                _bg_download(media)
+                import aiohttp as _aiohttp
+                ext = "mp4" if media.video else "mp3"
+                os.makedirs("downloads", exist_ok=True)
+                live_path = os.path.join("downloads", f"{media.id}.{ext}")
+                _media_url = f"{api_url.rstrip('/')}/{endpoint}?id={media.id}&api_key={api_key}"
+                _headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "X-API-Key": str(api_key),
+                }
+                _buffer_ready = asyncio.Event()
+                _INIT_BUF = 384 * 1024  # 384 KB (~25s audio buffer)
+
+                async def _live_dl():
+                    try:
+                        _timeout = _aiohttp.ClientTimeout(connect=25, sock_read=120, total=None)
+                        async with _aiohttp.ClientSession() as _s:
+                            async with _s.get(_media_url, headers=_headers, timeout=_timeout, allow_redirects=True) as _r:
+                                if _r.status != 200:
+                                    logger.warning("Live-dl %s -> HTTP %s", media.id, _r.status)
+                                    _buffer_ready.set()
+                                    return
+                                _buf = 0
+                                with open(live_path, "wb") as _fh:
+                                    async for _ck in _r.content.iter_chunked(128 * 1024):
+                                        _fh.write(_ck)
+                                        _fh.flush()
+                                        _buf += len(_ck)
+                                        if _buf >= _INIT_BUF and not _buffer_ready.is_set():
+                                            _buffer_ready.set()
+                                if not _buffer_ready.is_set():
+                                    _buffer_ready.set()
+                                logger.info("Live-dl completed: %s (%d bytes)", media.id, _buf)
+                                media.file_path = live_path
+                    except Exception as _ex:
+                        logger.warning("Live-dl error for %s: %s", media.id, _ex)
+                        _buffer_ready.set()
+
+                asyncio.create_task(_live_dl())
+                try:
+                    await asyncio.wait_for(_buffer_ready.wait(), timeout=35.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Live-dl buffer timeout for %s", media.id)
+
+                if os.path.exists(live_path) and os.path.getsize(live_path) > 0:
+                    media_path = live_path
+                    media.file_path = live_path
+                    logger.info("▶ Live-dl ready (%d bytes) for %s", os.path.getsize(live_path), media.id)
+                else:
+                    logger.warning("Live-dl empty for %s, falling back to full download", media.id)
         # ── Step 2: Attempt playback ──────────────────────────────────────────
         stream_success = False
         if media_path:

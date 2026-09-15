@@ -1216,12 +1216,6 @@ class YouTube:
         1. If not force_cold_file: return direct API proxy stream URL (zero disk usage).
         2. Local SSD cache -> Telegram Dump Backup -> Cold YT Download.
         """
-        if not force_cold_file:
-            stream_url = await self.get_stream_url(video_id, video=video)
-            if stream_url:
-                logger.info(f"Using direct API stream URL for voice chat: {video_id}")
-                return stream_url
-
         from ishu.core.cache_manager import cache_manager
         from ishu import db
 
